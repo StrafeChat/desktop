@@ -1,0 +1,15 @@
+node_modules
+bundle
+dist
+.env
+
+# ignore makepkg directories
+package/*/*/
+package/*/*.zst
+
+# Yarn cache files
+.yarn/install-state.gz
+.yarn/build-state.yml
+.yarn/cache
+
+.DS_Store

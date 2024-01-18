@@ -1,0 +1,39 @@
+{
+    "name": "strafechat-desktop",
+    "version": "1.0.0",
+    "description": "Strafe desktop app using Electron",
+    "author": "StrafeChat",
+    "main": "bundle/main.js",
+    "scripts": {
+        "start": "npm run bundle && electron .",
+        "bundle": "tsc",
+        "build:linux": "npm run bundle && electron-builder -l",
+        "build:mac": "npm run bundle && electron-builder -m",
+        "build:windows": "npm run bundle && electron-builder -w",
+        "clean": "rimraf dist"
+    },
+    "repository": "strafechat/desktop",
+    "devDependencies": {
+        "@types/auto-launch": "^5.0.2",
+        "@types/discord-rpc": "^4.0.3",
+        "dotenv-cli": "^6.0.0",
+        "electron": "^22.0.0",
+        "electron-builder": "^23.6.0",
+        "node-gyp": "^9.3.0",
+        "prettier": "^2.8.0",
+        "rimraf": "^3.0.2",
+        "tsc-watch": "^5.0.3",
+        "typescript": "^4.9.3"
+    },
+    "productName": "StrafeChat",
+    "build": {
+        "appId": "desktop.strafechat.dev"
+    },
+    "dependencies": {
+        "auto-launch": "^5.0.5",
+        "discord-rpc": "^4.0.1",
+        "electron-store": "^8.1.0",
+        "electron-updater": "^5.3.0",
+        "electron-window-state": "^5.0.3"
+    }
+}
