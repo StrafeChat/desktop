@@ -92,10 +92,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: npm run tauri
+          # linuxdeploy says nothing useful unless the bundler is verbose, and the Linux
+          # bundle is the one carrying a hand-built web engine.
+          args: ${{ matrix.args }} --verbose
           tagName: v__VERSION__
           releaseName: 'Strafe Desktop v__VERSION__'
           releaseBody: 'Installers for Windows, macOS and Linux are below. Installed copies update themselves.'
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          args: ${{ matrix.args }}
