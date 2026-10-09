@@ -1,0 +1,172 @@
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerMediaEndpoint.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerMediaEndpoint.cpp
+@@ -2191,6 +2191,56 @@
+     });
+ }
+ 
++// Browsers name the synchronisation source of every track they send ("a=ssrc:N cname:…"
++// and "a=ssrc:N msid:…"), and an SFU uses those lines to tie arriving media to the track
++// that was published. webrtcbin only writes them when the media caps carry an ssrc, which
++// they do not before the packetizers exist, so the sections go out anonymous and the
++// publication never completes. Fill them in from the source that will do the sending.
++void GStreamerMediaEndpoint::announceOutgoingSSRCs(GstSDPMessage* sdp)
++{
++    unsigned totalMedias = gst_sdp_message_medias_len(sdp);
++    for (unsigned i = 0; i < totalMedias; i++) {
++        auto* media = const_cast<GstSDPMedia*>(gst_sdp_message_get_media(sdp, i));
++
++        bool isSending = false;
++        bool hasSSRC = false;
++        unsigned totalAttributes = gst_sdp_media_attributes_len(media);
++        for (unsigned j = 0; j < totalAttributes; j++) {
++            const auto* attribute = gst_sdp_media_get_attribute(media, j);
++            if (!g_strcmp0(attribute->key, "sendonly") || !g_strcmp0(attribute->key, "sendrecv"))
++                isSending = true;
++            else if (!g_strcmp0(attribute->key, "ssrc"))
++                hasSSRC = true;
++        }
++        if (!isSending || hasSSRC)
++            continue;
++
++        auto msid = String::fromUTF8(gst_sdp_media_get_attribute_val(media, "msid"));
++        if (msid.isEmpty())
++            continue;
++
++        for (auto& source : m_unlinkedOutgoingSources) {
++            if (!source)
++                continue;
++            const auto& track = source->track();
++            if (!track)
++                continue;
++            if (makeString(source->mediaStreamID(), ' ', track->id()) != msid)
++                continue;
++
++            auto ssrc = source->announcedSSRC();
++            if (!ssrc)
++                break;
++
++            auto cname = makeString(ssrc, "-cname"_s);
++            gst_sdp_media_add_attribute(media, "ssrc", makeString(ssrc, " cname:"_s, cname).utf8().data());
++            gst_sdp_media_add_attribute(media, "ssrc", makeString(ssrc, " msid:"_s, msid).utf8().data());
++            GST_DEBUG_OBJECT(m_pipeline.get(), "Announced ssrc %u for msid %s", ssrc, msid.utf8().data());
++            break;
++        }
++    }
++}
++
+ void GStreamerMediaEndpoint::createSessionDescriptionSucceeded(GUniquePtr<GstWebRTCSessionDescription>&& description)
+ {
+     callOnMainThread([protectedThis = Ref(*this), this, description = WTFMove(description)] {
+@@ -2200,6 +2250,9 @@
+         if (!peerConnectionBackend)
+             return;
+ 
++        if (description->type == GST_WEBRTC_SDP_TYPE_OFFER)
++            announceOutgoingSSRCs(description->sdp);
++
+         auto sdpString = sdpAsString(description->sdp);
+ #ifndef GST_DISABLE_GST_DEBUG
+         GST_DEBUG_OBJECT(pipeline(), "Created SDP %s: %s", description->type == GST_WEBRTC_SDP_TYPE_OFFER ? "offer" : "answer", sdpString.utf8().data());
+--- a/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.cpp
+@@ -97,6 +97,16 @@
+     gst_element_add_pad(m_bin.get(), gst_ghost_pad_new("src", srcPad.get()));
+ }
+ 
++uint32_t RealtimeOutgoingMediaSourceGStreamer::ssrc()
++{
++    if (!m_ssrc && m_ssrcGenerator) {
++        auto candidate = m_ssrcGenerator->generateSSRC();
++        if (candidate != std::numeric_limits<uint32_t>::max())
++            m_ssrc = candidate;
++    }
++    return m_ssrc;
++}
++
+ const GRefPtr<GstCaps>& RealtimeOutgoingMediaSourceGStreamer::allowedCaps() const
+ {
+     if (m_allowedCaps)
+@@ -520,7 +530,11 @@
+                 break;
+ 
+         } else {
+-            auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, nullptr);
++            GUniquePtr<GstStructure> encodingParameters;
++            if (auto reservedSSRC = ssrc()) {
++                encodingParameters.reset(gst_structure_new("encoding-parameters", "ssrc", G_TYPE_UINT, reservedSSRC, nullptr));
++            }
++            auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, WTFMove(encodingParameters));
+             if (!packetizer)
+                 continue;
+ 
+--- a/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.h
++++ b/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.h
+@@ -45,6 +45,8 @@
+ 
+     void setMediaStreamID(const String& mediaStreamId) { m_mediaStreamId = mediaStreamId; }
+     const String& mediaStreamID() const { return m_mediaStreamId; }
++    const String& trackId() const { return m_trackId; }
++    uint32_t announcedSSRC() { return ssrc(); }
+     const GRefPtr<GstCaps>& allowedCaps() const;
+     WARN_UNUSED_RETURN GRefPtr<GstCaps> rtpCaps() const;
+ 
+@@ -111,6 +113,7 @@
+     GRefPtr<GstWebRTCRTPSender> m_sender;
+     GRefPtr<GstPad> m_webrtcSinkPad;
+     RefPtr<UniqueSSRCGenerator> m_ssrcGenerator;
++    uint32_t m_ssrc { 0 };
+     GUniquePtr<GstStructure> m_parameters;
+ 
+     Vector<RefPtr<GStreamerRTPPacketizer>> m_packetizers;
+@@ -134,6 +137,13 @@
+ 
+     void checkMid();
+ 
++    // The synchronisation source this track sends under. Chosen before the first offer is
++    // created, so the offer can name it: webrtcbin leaves `a=ssrc` out of a media section
++    // whose caps carry no ssrc, and an SFU that identifies an arriving stream by its ssrc
++    // then has nothing to match the publication to. The packetizer is given the same value
++    // so the packets agree with what was announced.
++    uint32_t ssrc();
++
+     struct ExtensionLookupResults {
+         bool hasRtpStreamIdExtension { false };
+         bool hasRtpRepairedStreamIdExtension { false };
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioRTPPacketizer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioRTPPacketizer.cpp
+@@ -62,7 +62,15 @@
+     auto inputCaps = adoptGRef(gst_caps_new_any());
+     GUniquePtr<GstStructure> structure(gst_structure_copy(codecParameters));
+ 
+-    auto ssrc = ssrcGenerator->generateSSRC();
++    // The source may already have announced an ssrc for this track in the SDP; packets have
++    // to carry that one, not a fresh one.
++    auto ssrc = std::numeric_limits<uint32_t>::max();
++    if (encodingParameters) {
++        if (auto reserved = gstStructureGet<unsigned>(encodingParameters.get(), "ssrc"_s))
++            ssrc = *reserved;
++    }
++    if (ssrc == std::numeric_limits<uint32_t>::max())
++        ssrc = ssrcGenerator->generateSSRC();
+     if (ssrc != std::numeric_limits<uint32_t>::max())
+         gst_structure_set(structure.get(), "ssrc", G_TYPE_UINT, ssrc, nullptr);
+ 
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerVideoRTPPacketizer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerVideoRTPPacketizer.cpp
+@@ -139,7 +139,15 @@
+         return nullptr;
+     }
+ 
+-    auto ssrc = ssrcGenerator->generateSSRC();
++    // The source may already have announced an ssrc for this track in the SDP; packets have
++    // to carry that one, not a fresh one.
++    auto ssrc = std::numeric_limits<uint32_t>::max();
++    if (encodingParameters) {
++        if (auto reserved = gstStructureGet<unsigned>(encodingParameters.get(), "ssrc"_s))
++            ssrc = *reserved;
++    }
++    if (ssrc == std::numeric_limits<uint32_t>::max())
++        ssrc = ssrcGenerator->generateSSRC();
+     if (ssrc != std::numeric_limits<uint32_t>::max())
+         gst_structure_set(codecParameters.get(), "ssrc", G_TYPE_UINT, ssrc, nullptr);
+ 

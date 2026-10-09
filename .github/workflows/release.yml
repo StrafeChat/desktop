@@ -60,6 +60,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      # Calls need a web engine with WebRTC, which no distribution ships, and a GStreamer
+      # new enough to go with it. scripts/build-webrtc-stack.sh builds both (plus a libnice
+      # that does not drag in libsoup2) for this exact runner; the tarball is laid over /usr
+      # here, so the bundler picks it up the way it would the stock libraries.
+      - name: WebRTC web engine
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WEBRTC_STACK_TAG: webrtc-stack-2.50.4
+        run: |
+          set -euo pipefail
+          installed="$(dpkg-query -W -f='${Version}' libwebkit2gtk-4.1-0)"
+          case "$installed" in
+            2.50.4-*) ;;
+            *) echo "runner has libwebkit2gtk-4.1 $installed, the WebRTC stack is 2.50.4 - rebuild it with scripts/build-webrtc-stack.sh"; exit 1 ;;
+          esac
+          gh release download "$WEBRTC_STACK_TAG" --repo "$GITHUB_REPOSITORY" --pattern 'webrtc-stack-*-ubuntu22.04-x86_64.tar.xz' --dir /tmp/webrtc-stack
+          sudo tar -C / -xJf /tmp/webrtc-stack/webrtc-stack-*-ubuntu22.04-x86_64.tar.xz
+          sudo ldconfig
+          # Prove it took: only a WebRTC build links GStreamer's webrtc library.
+          ldd /usr/lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0 | grep -q libgstwebrtc || { echo "WebRTC engine not in place"; exit 1; }
+          gst-inspect-1.0 --version | head -2
+
       - run: npm ci && npm ci --prefix web
 
       - uses: tauri-apps/tauri-action@v0

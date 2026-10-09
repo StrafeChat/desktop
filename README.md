@@ -9,7 +9,7 @@ holds accounts from any number of them.
 What the app adds over a browser tab: its own title bar, a tray icon (closing the window keeps
 you reachable), system notifications with a taskbar badge for unread mentions, launch at
 start-up, links opening in your browser, "Playing Strafe" on your Discord profile, and in-app
-updates.
+updates. Voice and video work on all three platforms.
 
 Downloads are at [strafe.chat/download](https://strafe.chat/download), which lists the files of
 the newest [release](https://github.com/StrafeChat/desktop/releases).
@@ -98,22 +98,18 @@ theme. `npm run icons` rebuilds `branding/icon-1024.png`, the web client's icons
 
 ## Known limits
 
-- **Voice and video do not work in the Linux app.** The webview there is WebKitGTK, and the
-  builds distributions ship leave WebRTC out entirely; the AppImage bundles the WebKitGTK of
-  the machine it was built on, so CI AppImages carry the gap too. The app says so when a call
-  is attempted; use the web client in a browser for calls on Linux. Windows (WebView2) and
-  macOS (WebKit with WebRTC) are unaffected.
-
-  `scripts/build-webkitgtk-webrtc.sh` builds a WebKitGTK with `ENABLE_WEB_RTC=ON`, which gets
-  further but is **not enough on its own**, so it is not in the release build yet. With it, a
-  call reaches the server and shows as connected and encrypted, but the microphone never
-  finishes publishing: WebKitGTK's WebRTC is GStreamer's rather than libwebrtc, and the offer
-  it writes differs from a browser's in ways LiveKit's SFU does not accept. What has been
-  tried and ruled out: a shared ICE credential (needed - the SFU refuses one credential per
-  media section), turning off audio redundancy and simulcast, rewriting bundle-only media
-  sections to carry a port, rewriting the per-SSRC stream labels to the published track's id,
-  and GStreamer 1.26 in place of Ubuntu's 1.20. Finishing this needs the SFU and GStreamer
-  brought into agreement upstream rather than patched around in the client.
+- **The Linux build carries its own web engine.** No distribution ships a WebKitGTK with
+  WebRTC compiled in, and below GStreamer 1.24 the engine cannot label the media it sends,
+  so a stock AppImage could not make a call. `scripts/build-webrtc-stack.sh` builds the
+  engine the release uses - WebKitGTK with `ENABLE_WEB_RTC=ON`, GStreamer 1.26 and a libnice
+  without gupnp (Ubuntu's drags in libsoup2, which aborts a process that already has
+  libsoup3) - plus the two patches in `patches/`: WebKit names the synchronisation source of
+  each track it sends, which is how an SFU ties arriving media to a published track, and
+  webrtcbin's assertion about a transceiver changing media line becomes a warning, since an
+  SFU that reorders its offer when someone joins otherwise kills the web process. The result
+  is published as the pre-release `webrtc-stack-<version>` and laid over /usr by the release
+  workflow. Rebuild it when the runner's WebKitGTK version changes; the workflow fails loudly
+  if the two disagree.
 - **Switching to a build with an older WebKitGTK breaks the encryption store** (Linux). The
   AppImage bundles the WebKitGTK of the machine that built it, and WebKit's IndexedDB files
   carry a metadata version a newer engine bumps and an older one refuses - so a profile last

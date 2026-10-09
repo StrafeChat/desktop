@@ -1,0 +1,21 @@
+--- a/ext/webrtc/gstwebrtcbin.c
++++ b/ext/webrtc/gstwebrtcbin.c
+@@ -3476,7 +3476,17 @@
+   if (trans->direction == GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_NONE)
+     return FALSE;
+ 
+-  g_assert (trans->mline == -1 || trans->mline == media_idx);
++  /* A transceiver that was negotiated at one media index and is now being written at
++   * another aborts the process here. It happens with an SFU that re-sends its offer with
++   * the sections in a different order (LiveKit does, every time a participant joins), and
++   * killing the web process over it is far worse than following the offer: take the index
++   * the description actually uses. */
++  if (trans->mline != -1 && trans->mline != media_idx) {
++    GST_WARNING_OBJECT (webrtc,
++        "transceiver %" GST_PTR_FORMAT " moved from m-line %d to %u, following the description",
++        trans, trans->mline, media_idx);
++    trans->mline = media_idx;
++  }
+ 
+   rtp_session_idx = bundled_mids ? bundle_idx : media_idx;
+ 
