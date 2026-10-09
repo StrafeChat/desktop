@@ -81,7 +81,7 @@ jobs:
           sudo ldconfig
           # Prove it took: only a WebRTC build links GStreamer's webrtc library.
           ldd /usr/lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0 | grep -q libgstwebrtc || { echo "WebRTC engine not in place"; exit 1; }
-          gst-inspect-1.0 --version | head -2
+          test -f /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwebrtc.so || { echo "GStreamer webrtc plugin missing"; exit 1; }
 
       - run: npm ci && npm ci --prefix web
 
