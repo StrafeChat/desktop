@@ -86,6 +86,15 @@ jobs:
           # Prove it took: only a WebRTC build links GStreamer's webrtc library.
           ldd /usr/lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0 | grep -q libgstwebrtc || { echo "WebRTC engine not in place"; exit 1; }
           test -f /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwebrtc.so || { echo "GStreamer webrtc plugin missing"; exit 1; }
+          # Whatever the distribution left in the plugin directory belongs to its older
+          # GStreamer and cannot load against this one; bundled, it would only fail to
+          # register and take media playback with it. Keep the plugins the stack ships.
+          tar -tJf /tmp/webrtc-stack/webrtc-stack-*-ubuntu22.04-x86_64.tar.xz \
+            | sed -n 's#^usr/lib/x86_64-linux-gnu/gstreamer-1.0/##p' | grep '\.so$' | sort > /tmp/stack-plugins.txt
+          for plugin in /usr/lib/x86_64-linux-gnu/gstreamer-1.0/*.so; do
+            grep -qx "$(basename "$plugin")" /tmp/stack-plugins.txt || sudo rm -f "$plugin"
+          done
+          echo "plugins kept: $(ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/*.so | wc -l)"
 
       - run: npm ci && npm ci --prefix web
 

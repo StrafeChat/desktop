@@ -76,10 +76,15 @@ docker exec "$NAME" bash -euo pipefail -c "
   }
 
   build gstreamer -Dintrospection=disabled
+  # Everything the engine needs at runtime has to be rebuilt here: a plugin from the
+  # distribution's older GStreamer cannot load against this one, and the AppImage bundles
+  # whatever is in the plugin directory. Anything left behind at the old version simply
+  # fails to register - which is how media playback would quietly stop working.
   build gst-plugins-base -Dintrospection=disabled -Dauto_features=disabled \
     -Dapp=enabled -Daudioconvert=enabled -Daudioresample=enabled -Daudiotestsrc=enabled \
     -Dplayback=enabled -Dtypefind=enabled -Dvolume=enabled -Dvideoconvertscale=enabled \
-    -Dvideotestsrc=enabled -Dvideorate=enabled -Dopus=enabled -Dgl=enabled
+    -Dvideotestsrc=enabled -Dvideorate=enabled -Dopus=enabled -Dgl=enabled \
+    -Dogg=enabled -Dvorbis=enabled -Dtheora=enabled -Dsubparse=enabled -Dtcp=enabled
 
   # libnice before gst-plugins-bad: its webrtc plugin needs a newer one than Ubuntu has, and
   # gupnp is what drags in libsoup2 (see the header of this script).
@@ -101,7 +106,10 @@ docker exec "$NAME" bash -euo pipefail -c "
   build gst-plugins-good -Dauto_features=disabled \
     -Dautodetect=enabled -Drtp=enabled -Drtpmanager=enabled -Dpulse=enabled -Daudioparsers=enabled \
     -Dvpx=enabled -Dvideofilter=enabled -Dinterleave=enabled -Daudiofx=enabled -Dlevel=enabled \
-    -Dequalizer=enabled -Ddeinterlace=enabled
+    -Dequalizer=enabled -Ddeinterlace=enabled \
+    -Disomp4=enabled -Dmatroska=enabled -Dflac=enabled -Dwavparse=enabled -Dwavenc=enabled \
+    -Dlaw=enabled -Davi=enabled -Dflv=enabled -Dvideocrop=enabled -Dicydemux=enabled -Dapetag=enabled \
+    -Did3demux=enabled -Dmultifile=enabled
 "
 
 # --- WebKitGTK ----------------------------------------------------------------------------
