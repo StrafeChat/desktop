@@ -1,15 +1,4 @@
-node_modules
-bundle
-dist
-.env
-
-# ignore makepkg directories
-package/*/*/
-package/*/*.zst
-
-# Yarn cache files
-.yarn/install-state.gz
-.yarn/build-state.yml
-.yarn/cache
-
+node_modules/
+# The web client's build output lives in the submodule; Cargo's in src-tauri/target.
+web/dist/
 .DS_Store
