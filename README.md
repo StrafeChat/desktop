@@ -8,9 +8,11 @@ holds accounts from any number of them.
 
 What the app adds over a browser tab: its own title bar, a tray icon (closing the window keeps
 you reachable), system notifications with a taskbar badge for unread mentions, launch at
-start-up, links opening in your browser, and in-app updates.
+start-up, links opening in your browser, "Playing Strafe" on your Discord profile, and in-app
+updates.
 
-Downloads are on the [releases page](https://github.com/StrafeChat/desktop/releases).
+Downloads are at [strafe.chat/download](https://strafe.chat/download), which lists the files of
+the newest [release](https://github.com/StrafeChat/desktop/releases).
 
 ## Layout
 
@@ -66,6 +68,24 @@ Updates are signed with a minisign key. The public half is `plugins.updater.pubk
 none). Keep it safe: a lost private key means a new public key, and apps installed with the
 old one stop updating until reinstalled. Generate a pair with
 `npx tauri signer generate -w ~/.tauri/strafe-desktop.key`.
+
+## Discord activity
+
+While the window is open, Discord (if it is running on the same computer) shows "Playing
+Strafe" on the person's profile, with "In a voice call" and an elapsed time during calls, and a
+"Get Strafe" button for anyone who looks. Discord learns nothing else - never which instance,
+space or room. A Strafe hidden in the tray is not shown as playing, and the toggle under
+Settings -> Desktop turns the whole thing off (`discordPresence` in `prefs.json`).
+
+The name comes from a Discord *application* called **Strafe**, whose Application ID is
+`DISCORD_APP_ID` in `src-tauri/src/discord.rs` (public, not a secret). A fork with its own
+application can export `STRAFE_DISCORD_APP_ID` when building, which wins over the constant; an
+empty value turns the feature off in that build, and Settings says so. The art
+beside the activity is `branding/icon-1024.png` fetched from this repository, so nothing has to
+be uploaded to the application. The code talks to Discord over its local IPC socket
+(`discord-ipc-0` in `$XDG_RUNTIME_DIR`, `\\.\pipe\discord-ipc-0` on Windows; Flatpak and
+Snap Discord are found too), retries every 20 s while Discord is not running, and logs a line
+if Discord refuses the application ID.
 
 ## Icons
 

@@ -3,8 +3,9 @@
 //! Everything that makes the desktop app more than a browser tab lives here: one window
 //! with its own title bar (the frontend draws it; this side only has to allow dragging and
 //! the three buttons), a tray icon so closing the window can mean "keep running", the
-//! start-up preferences, and a small file where the frontend keeps the accounts it can
-//! switch between. The frontend talks to all of it through the commands at the bottom.
+//! start-up preferences, a small file where the frontend keeps the accounts it can switch
+//! between, and the "Playing Strafe" activity on Discord (see discord.rs). The frontend
+//! talks to all of it through the commands at the bottom.
 
 use std::{
     fs,
@@ -20,6 +21,10 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WindowEvent,
 };
+
+mod discord;
+
+use discord::{Discord, Presence};
 
 const MAIN_WINDOW: &str = "main";
 const ACCOUNTS_FILE: &str = "accounts.json";
@@ -37,6 +42,8 @@ pub struct Prefs {
     /// When launched at login (the autostart plugin passes `--minimized`), start hidden in
     /// the tray rather than opening the window.
     pub start_minimized: bool,
+    /// Show "Playing Strafe" on the person's Discord profile while the window is open.
+    pub discord_presence: bool,
 }
 
 impl Default for Prefs {
@@ -44,6 +51,7 @@ impl Default for Prefs {
         Self {
             close_to_tray: true,
             start_minimized: true,
+            discord_presence: true,
         }
     }
 }
@@ -98,6 +106,15 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+    set_discord_visible(app, true);
+}
+
+/// Tell the presence thread whether the window is on screen (`try_state`: the thread is
+/// started in setup, and the 8 s fallback or a second launch could in theory race it).
+fn set_discord_visible(app: &AppHandle, visible: bool) {
+    if let Some(d) = app.try_state::<Discord>() {
+        d.set_visible(visible);
+    }
 }
 
 fn reveal_main_once(app: &AppHandle) {
@@ -135,8 +152,27 @@ fn desktop_prefs_load(state: tauri::State<'_, PrefsState>) -> Prefs {
 fn desktop_prefs_save(app: AppHandle, state: tauri::State<'_, PrefsState>, prefs: Prefs) -> Result<(), String> {
     let dir = config_dir(&app)?;
     write_json(&dir.join(PREFS_FILE), &serde_json::to_value(&prefs).map_err(|e| e.to_string())?)?;
-    *state.0.lock().unwrap() = prefs;
+    let was = std::mem::replace(&mut *state.0.lock().unwrap(), prefs.clone());
+    if was.discord_presence != prefs.discord_presence {
+        if let Some(d) = app.try_state::<Discord>() {
+            d.set_enabled(prefs.discord_presence);
+        }
+    }
     Ok(())
+}
+
+/// What Discord should show under "Playing Strafe" right now (the frontend knows whether
+/// the person is in a call; this side only knows whether the window is open).
+#[tauri::command]
+fn desktop_discord_presence_set(discord: tauri::State<'_, Discord>, presence: Presence) {
+    discord.set_presence(presence);
+}
+
+/// Whether this build carries a Discord application ID at all, so Settings can say when the
+/// toggle cannot do anything.
+#[tauri::command]
+fn desktop_discord_presence_available() -> bool {
+    Discord::configured()
 }
 
 /// The frontend has painted: show the window, unless this launch was asked to stay in
@@ -250,10 +286,15 @@ pub fn run() {
             desktop_prefs_save,
             desktop_ready,
             desktop_show,
+            desktop_discord_presence_set,
+            desktop_discord_presence_available,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            *app.state::<PrefsState>().0.lock().unwrap() = load_prefs(&handle);
+            let prefs = load_prefs(&handle);
+            // The window starts hidden, so the thread hears `visible` from show_main later.
+            app.manage(Discord::start(prefs.discord_presence));
+            *app.state::<PrefsState>().0.lock().unwrap() = prefs;
             build_tray(&handle)?;
             enable_media(&handle);
             // If the frontend never calls desktop_ready (dev server down, a broken build),
@@ -274,6 +315,7 @@ pub fn run() {
                 if close_to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                    set_discord_visible(window.app_handle(), false);
                 }
             }
         })
