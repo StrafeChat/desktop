@@ -276,9 +276,21 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 /// WebKitGTK has WebRTC and getUserMedia off by default, which would leave the Linux app
 /// unable to join a voice room or share a screen. Chromium (Windows) and WebKit on macOS
 /// need nothing.
+///
+/// It also asks the embedder before every `getUserMedia`, and a request nobody answers is a
+/// denial - which is what made the microphone unavailable in a call even once WebRTC itself
+/// worked. The answer here is yes for the app's own pages: the person already chose to join
+/// a call, and the operating system still has the final say (PipeWire or PulseAudio, and the
+/// desktop portal for screen sharing). Device-info requests - what `enumerateDevices` needs
+/// to return real labels for the device pickers - are granted on the same basis. Nothing
+/// else is: a geolocation or notification request from inside the page gets the default
+/// refusal.
 #[cfg(target_os = "linux")]
 fn enable_media(app: &AppHandle) {
-    use webkit2gtk::{SettingsExt, WebViewExt};
+    use webkit2gtk::{
+        DeviceInfoPermissionRequest, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest,
+        WebViewExt,
+    };
     if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
         let _ = w.with_webview(|webview| {
             let wv = webview.inner();
@@ -287,6 +299,16 @@ fn enable_media(app: &AppHandle) {
                 settings.set_enable_media_stream(true);
                 settings.set_enable_media_capabilities(true);
             }
+            wv.connect_permission_request(|_, request| {
+                use webkit2gtk::glib::object::Cast;
+                let media = request.downcast_ref::<UserMediaPermissionRequest>().is_some();
+                let devices = request.downcast_ref::<DeviceInfoPermissionRequest>().is_some();
+                if media || devices {
+                    request.allow();
+                    return true;
+                }
+                false
+            });
         });
     }
 }

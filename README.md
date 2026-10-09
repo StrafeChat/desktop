@@ -100,10 +100,20 @@ theme. `npm run icons` rebuilds `branding/icon-1024.png`, the web client's icons
 
 - **Voice and video do not work in the Linux app.** The webview there is WebKitGTK, and the
   builds distributions ship leave WebRTC out entirely; the AppImage bundles the WebKitGTK of
-  the machine it was built on, so it carries the same gap. The app says so when a call is
-  attempted; use the web client in a browser for calls on Linux. Windows (WebView2) and
-  macOS (WebKit with WebRTC) are unaffected. The shell already switches WebRTC on in the
-  WebKitGTK settings, so a WebKitGTK built with `ENABLE_WEB_RTC=ON` would work.
+  the machine it was built on, so CI AppImages carry the gap too. The app says so when a call
+  is attempted; use the web client in a browser for calls on Linux. Windows (WebView2) and
+  macOS (WebKit with WebRTC) are unaffected.
+
+  `scripts/build-webkitgtk-webrtc.sh` builds a WebKitGTK with `ENABLE_WEB_RTC=ON`, which gets
+  further but is **not enough on its own**, so it is not in the release build yet. With it, a
+  call reaches the server and shows as connected and encrypted, but the microphone never
+  finishes publishing: WebKitGTK's WebRTC is GStreamer's rather than libwebrtc, and the offer
+  it writes differs from a browser's in ways LiveKit's SFU does not accept. What has been
+  tried and ruled out: a shared ICE credential (needed - the SFU refuses one credential per
+  media section), turning off audio redundancy and simulcast, rewriting bundle-only media
+  sections to carry a port, rewriting the per-SSRC stream labels to the published track's id,
+  and GStreamer 1.26 in place of Ubuntu's 1.20. Finishing this needs the SFU and GStreamer
+  brought into agreement upstream rather than patched around in the client.
 - **Switching to a build with an older WebKitGTK breaks the encryption store** (Linux). The
   AppImage bundles the WebKitGTK of the machine that built it, and WebKit's IndexedDB files
   carry a metadata version a newer engine bumps and an older one refuses - so a profile last
