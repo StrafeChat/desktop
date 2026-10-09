@@ -72,10 +72,12 @@ old one stop updating until reinstalled. Generate a pair with
 ## Discord activity
 
 While the window is open, Discord (if it is running on the same computer) shows "Playing
-Strafe" on the person's profile, with "In a voice call" and an elapsed time during calls, and a
-"Get Strafe" button for anyone who looks. Discord learns nothing else - never which instance,
-space or room. A Strafe hidden in the tray is not shown as playing, and the toggle under
-Settings -> Desktop turns the whole thing off (`discordPresence` in `prefs.json`).
+Strafe" on the person's profile: "Securely chatting with other Strafers!", the instance they are
+signed in to beneath it (its federation domain, or the host it was reached at), "in a voice
+call" with the call's timer during calls, and a "Get Strafe" button for anyone who looks. Discord
+learns nothing else - never a space or a room. A Strafe hidden in the tray is not shown as
+playing, and the toggle under Settings -> Desktop turns the whole thing off (`discordPresence`
+in `prefs.json`).
 
 The name comes from a Discord *application* called **Strafe**, whose Application ID is
 `DISCORD_APP_ID` in `src-tauri/src/discord.rs` (public, not a secret). A fork with its own
@@ -102,6 +104,16 @@ theme. `npm run icons` rebuilds `branding/icon-1024.png`, the web client's icons
   attempted; use the web client in a browser for calls on Linux. Windows (WebView2) and
   macOS (WebKit with WebRTC) are unaffected. The shell already switches WebRTC on in the
   WebKitGTK settings, so a WebKitGTK built with `ENABLE_WEB_RTC=ON` would work.
+- **Switching to a build with an older WebKitGTK breaks the encryption store** (Linux). The
+  AppImage bundles the WebKitGTK of the machine that built it, and WebKit's IndexedDB files
+  carry a metadata version a newer engine bumps and an older one refuses - so a profile last
+  used by, say, a locally built AppImage on a rolling distribution (2.52) cannot be opened by
+  the CI build (2.50 from the Ubuntu 22.04 runner): the E2EE engine fails to start and WebKit's
+  database server crashes on the attempt. The app notices and offers "Reset encryption": the
+  shell leaves a `wipe-indexeddb` marker in its config dir, relaunches, and deletes
+  `<data dir>/databases/indexeddb/v1/tauri_localhost_0` before the webview exists; the client
+  revokes the old device, provisions a fresh one and asks for the recovery code. Every account
+  on that device goes through the same restore. Upgrading the engine never has this problem.
 - Passkeys cannot be used as a second factor in the app (WebAuthn binds to the page's
   origin, which is not the instance's domain); TOTP and recovery codes work.
 - A hosted captcha (Turnstile, Friendly) must allow the host `tauri.localhost` in its site

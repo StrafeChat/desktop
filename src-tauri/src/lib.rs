@@ -29,6 +29,9 @@ use discord::{Discord, Presence};
 const MAIN_WINDOW: &str = "main";
 const ACCOUNTS_FILE: &str = "accounts.json";
 const PREFS_FILE: &str = "prefs.json";
+/// Left in the config dir by `desktop_wipe_webview_storage`; honoured (and removed) at the
+/// next start, before the webview exists. Holds the origin directory to wipe.
+const WIPE_MARKER: &str = "wipe-indexeddb";
 
 /// Start-up and window behaviour the person chose in Settings -> Desktop. Kept on disk
 /// (and in memory, for the close handler) on this side because the window-close event
@@ -194,6 +197,50 @@ fn desktop_show(app: AppHandle) {
     show_main(&app);
 }
 
+/// The webview's IndexedDB for the app origin is unusable - typically written by a newer
+/// WebKitGTK than the one this build bundles (the IndexedDB files carry a metadata version
+/// an older engine rejects; the E2EE engine's store is what notices) - and WebKit's database
+/// server crashes on it, which takes `indexedDB.deleteDatabase` down with it. So the wipe
+/// happens from here: leave a marker and relaunch; the next start removes the directory
+/// before the webview opens (see wipe_webview_storage_if_asked). Linux only, where the
+/// engine is bundled and the layout is known; elsewhere the frontend's own deletion works.
+#[tauri::command]
+fn desktop_wipe_webview_storage(app: AppHandle) -> Result<(), String> {
+    let dir = config_dir(&app)?;
+    fs::write(dir.join(WIPE_MARKER), b"tauri_localhost_0\n").map_err(|e| e.to_string())?;
+    app.restart()
+}
+
+/// Honour a wipe marker left by `desktop_wipe_webview_storage`. Runs before the Tauri app is
+/// built, so the paths are computed the way Tauri does (`dirs` + identifier) rather than
+/// asked of it; WebKitGTK keeps IndexedDB under `<data dir>/databases/indexeddb/v1/<origin>`.
+#[cfg(target_os = "linux")]
+fn wipe_webview_storage_if_asked(identifier: &str) {
+    let (Some(config), Some(data)) = (dirs::config_dir(), dirs::data_dir()) else {
+        return;
+    };
+    let marker = config.join(identifier).join(WIPE_MARKER);
+    let Ok(origin) = fs::read_to_string(&marker) else {
+        return;
+    };
+    let origin = origin.trim();
+    let _ = fs::remove_file(&marker);
+    // A plain directory name only - never a path component that could climb out.
+    if origin.is_empty() || !origin.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        eprintln!("ignoring wipe marker with an odd origin: {origin:?}");
+        return;
+    }
+    let target = data.join(identifier).join("databases").join("indexeddb").join("v1").join(origin);
+    match fs::remove_dir_all(&target) {
+        Ok(()) => eprintln!("wiped webview IndexedDB at {}", target.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("could not wipe webview IndexedDB at {}: {e}", target.display()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn wipe_webview_storage_if_asked(_identifier: &str) {}
+
 // ---- app -----------------------------------------------------------------------------------
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -248,6 +295,9 @@ fn enable_media(app: &AppHandle) {
 fn enable_media(_app: &AppHandle) {}
 
 pub fn run() {
+    let context = tauri::generate_context!();
+    wipe_webview_storage_if_asked(&context.config().identifier);
+
     let builder = tauri::Builder::default();
 
     // A second launch (double-clicking the icon while it sits in the tray) must raise the
@@ -288,6 +338,7 @@ pub fn run() {
             desktop_show,
             desktop_discord_presence_set,
             desktop_discord_presence_available,
+            desktop_wipe_webview_storage,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -319,6 +370,6 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Strafe");
 }
