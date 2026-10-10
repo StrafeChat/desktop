@@ -62,7 +62,15 @@ jobs:
           # runner has no gstreamer packages of its own to pull them in, and the AppImage
           # bundler stops when a dependency is missing.
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libsrtp2-1 libvpx7 libopus0 libgudev-1.0-0 libjpeg-turbo8 libpng16-16
+            libsrtp2-1 libvpx7 libopus0 libgudev-1.0-0 libjpeg-turbo8 libpng16-16 libnss3
+          # libsrtp2 does its crypto through NSS, and NSS loads the ciphers from PKCS#11
+          # modules it dlopens by name - nothing links them, so the AppImage bundler cannot
+          # see them and would leave them out. Without them srtp_init() fails, SRTP never
+          # starts and a call sends no audio at all. tauri.conf.json copies these three into
+          # the bundle; fail here, with a reason, rather than shipping that silence again.
+          for lib in libsoftokn3.so libfreeblpriv3.so libfreebl3.so; do
+            test -f "/usr/lib/x86_64-linux-gnu/nss/$lib" || { echo "NSS module $lib missing - the AppImage's SRTP would not start"; exit 1; }
+          done
 
       # Calls need a web engine with WebRTC, which no distribution ships, and a GStreamer
       # new enough to go with it. scripts/build-webrtc-stack.sh builds both (plus a libnice

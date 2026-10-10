@@ -45,7 +45,12 @@
     ],
     "linux": {
       "appimage": {
-        "bundleMediaFramework": true
+        "bundleMediaFramework": true,
+        "files": {
+          "/usr/lib/libsoftokn3.so": "/usr/lib/x86_64-linux-gnu/nss/libsoftokn3.so",
+          "/usr/lib/libfreeblpriv3.so": "/usr/lib/x86_64-linux-gnu/nss/libfreeblpriv3.so",
+          "/usr/lib/libfreebl3.so": "/usr/lib/x86_64-linux-gnu/nss/libfreebl3.so"
+        }
       }
     },
     "macOS": {
