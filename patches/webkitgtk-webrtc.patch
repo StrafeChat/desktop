@@ -1,0 +1,1762 @@
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerMediaEndpoint.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerMediaEndpoint.cpp
+@@ -632,6 +632,40 @@
+     return states;
+ }
+ 
++// An answer settles what a sender actually sends, and it can differ from what we offered -
++// the payload type above all, which the other end is free to renumber. Hand each m-line's
++// choices to the transceiver that carries it; the outgoing source watching that transceiver
++// then rebuilds its packetizer for what was agreed. Without this a sender keeps packetizing
++// what we proposed, which the far end does not recognise, and the call carries no audio.
++void GStreamerMediaEndpoint::adoptNegotiatedCodecs(const GstSDPMessage* sdpMessage)
++{
++    unsigned totalMedias = gst_sdp_message_medias_len(sdpMessage);
++    for (unsigned i = 0; i < totalMedias; i++) {
++        const auto media = gst_sdp_message_get_media(sdpMessage, i);
++        auto mediaType = StringView::fromLatin1(gst_sdp_media_get_media(media));
++        if (mediaType != "audio"_s && mediaType != "video"_s)
++            continue;
++
++        auto caps = capsFromSDPMedia(media);
++        if (!caps || gst_caps_is_empty(caps.get()))
++            continue;
++
++        forEachTransceiver(m_webrtcBin, [&](auto&& transceiver) -> bool {
++            unsigned mLineIndex;
++            GstWebRTCRTPTransceiverDirection direction;
++            g_object_get(transceiver.get(), "mlineindex", &mLineIndex, "direction", &direction, nullptr);
++            if (mLineIndex != i)
++                return false;
++            if (direction != GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY && direction != GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV)
++                return true;
++
++            GST_DEBUG_OBJECT(m_pipeline.get(), "Handing the codecs agreed for m-line %u to %" GST_PTR_FORMAT, i, transceiver.get());
++            g_object_set(transceiver.get(), "codec-preferences", caps.get(), nullptr);
++            return true;
++        });
++    }
++}
++
+ void GStreamerMediaEndpoint::linkOutgoingSources(GstSDPMessage* sdpMessage)
+ {
+     unsigned totalMedias = gst_sdp_message_medias_len(sdpMessage);
+@@ -640,38 +674,44 @@
+     GUniquePtr<char> sdp(gst_sdp_message_as_text(sdpMessage));
+     GST_TRACE_OBJECT(m_pipeline.get(), "in SDP:\n%s", sdp.get());
+ #endif
+-    for (unsigned i = 0; i < totalMedias; i++) {
+-        const auto media = gst_sdp_message_get_media(sdpMessage, i);
+-        auto mediaType = StringView::fromLatin1(gst_sdp_media_get_media(media));
+-        RealtimeMediaSource::Type sourceType;
+-        if (mediaType == "audio"_s)
+-            sourceType = RealtimeMediaSource::Type::Audio;
+-        else if (mediaType == "video"_s)
+-            sourceType = RealtimeMediaSource::Type::Video;
+-        else {
+-            GST_DEBUG_OBJECT(m_pipeline.get(), "Skipping non audio/video source");
+-            continue;
+-        }
+-
+-        auto msid = String::fromUTF8(gst_sdp_media_get_attribute_val(media, "msid"));
+ 
+-        GST_DEBUG_OBJECT(m_pipeline.get(), "Looking-up outgoing source with msid %s in %zu unlinked sources", msid.utf8().data(), m_unlinkedOutgoingSources.size());
+-        m_unlinkedOutgoingSources.removeFirstMatching([&](auto& source) -> bool {
++    // Two passes: a section that names the stream and track it carries takes the source it
++    // names, and only then may a section that names nothing take one of what is left. In one
++    // pass an earlier section without an msid - a section left behind by a previous
++    // publication, say - claims the source belonging to a later section that does name it,
++    // and the source ends up on a transceiver nobody negotiated, whose sink pad webrtcbin
++    // keeps blocked: the track then sends nothing at all, silently.
++    bool attachedNewPad = false;
++    auto linkSource = [&](const GstSDPMedia* media, unsigned mLineIndex, RealtimeMediaSource::Type sourceType, const String& msid, bool requireMsidMatch) -> bool {
++        return m_unlinkedOutgoingSources.removeFirstMatching([&](auto& source) -> bool {
+             if (source->type() != sourceType)
+                 return false;
+ 
+-            if (const auto& track = source->track()) {
+-                auto sourceMsid = makeString(source->mediaStreamID(), ' ', track->id());
+-                if (!msid.isEmpty() && sourceMsid != msid)
++            String sourceMsid;
++            if (const auto& track = source->track())
++                sourceMsid = makeString(source->mediaStreamID(), ' ', track->id());
++
++            if (auto offeredMLineIndex = source->offeredMLineIndex()) {
++                // We know which section is this source's, from the offer that proposed it.
++                if (*offeredMLineIndex != mLineIndex)
+                     return false;
+-            }
++            } else if (requireMsidMatch) {
++                if (msid.isEmpty() || sourceMsid != msid)
++                    return false;
++            } else if (!msid.isEmpty() && !sourceMsid.isEmpty() && sourceMsid != msid)
++                return false;
+ 
++            GST_DEBUG_OBJECT(m_pipeline.get(), "Linking outgoing source with msid '%s' to m-line %u (msid '%s')", sourceMsid.utf8().data(), mLineIndex, msid.utf8().data());
+             auto allowedCaps = capsFromSDPMedia(media);
+             source->configure(WTFMove(allowedCaps));
+             if (!source->pad()) {
+                 auto rtpCaps = source->rtpCaps();
+-                auto sinkPad = requestPad(rtpCaps, source->mediaStreamID());
++                // Ask for the pad of the very m-line this source was matched to: letting
++                // webrtcbin pick can land the source on a transceiver that is not in the
++                // description being applied, which is never negotiated.
++                auto sinkPad = requestPadForMLine(mLineIndex, rtpCaps, source->mediaStreamID());
+                 source->setSinkPad(WTFMove(sinkPad));
++                attachedNewPad = true;
+             }
+ 
+             auto& sinkPad = source->pad();
+@@ -686,6 +726,37 @@
+             });
+             return true;
+         });
++    };
++
++    auto renegotiateIfPadWasAttached = makeScopeExit([&] {
++        if (!attachedNewPad)
++            return;
++        // The sink pad this source sends through was only attached now, while the
++        // description that named its m-line was being applied - too late for webrtcbin to
++        // have set that direction up. Another round of negotiation puts the section in with
++        // the sender on it; without one the track stays silent for the whole call.
++        GST_DEBUG_OBJECT(m_pipeline.get(), "A sender pad was attached while applying a description, negotiation is needed again");
++        onNegotiationNeeded();
++    });
++
++    for (bool requireMsidMatch : { true, false }) {
++        for (unsigned i = 0; i < totalMedias; i++) {
++            if (m_unlinkedOutgoingSources.isEmpty())
++                return;
++
++            const auto media = gst_sdp_message_get_media(sdpMessage, i);
++            auto mediaType = StringView::fromLatin1(gst_sdp_media_get_media(media));
++            RealtimeMediaSource::Type sourceType;
++            if (mediaType == "audio"_s)
++                sourceType = RealtimeMediaSource::Type::Audio;
++            else if (mediaType == "video"_s)
++                sourceType = RealtimeMediaSource::Type::Video;
++            else
++                continue;
++
++            auto msid = String::fromUTF8(gst_sdp_media_get_attribute_val(media, "msid"));
++            linkSource(media, i, sourceType, msid, requireMsidMatch);
++        }
+     }
+ }
+ 
+@@ -780,14 +851,17 @@
+             return;
+         }
+ 
+-        // Make sure each outgoing media source is configured using the proposed codec and linked to webrtcbin.
+-        linkOutgoingSources(sdpMessage.get());
++        // Nothing to link yet: the sources are configured and linked once webrtcbin has
++        // applied the description (see below), which is when its transceivers carry the
++        // media ids and transports that make them usable.
+     }
+-
+-    if (!m_unlinkedOutgoingSources.isEmpty())
+-        GST_WARNING_OBJECT(m_pipeline.get(), "Unlinked outgoing sources lingering");
+     gst_element_set_state(m_pipeline.get(), GST_STATE_PLAYING);
+ 
++    // An offer of ours is a proposal, not what the sender ends up using: the answer decides,
++    // down to the payload type, which the other end is free to renumber. Sources therefore
++    // wait for the answer rather than being configured from our own offer. (This holds for
++    // every offer, including the second and later ones on a connection that already has a
++    // remote description from an earlier round.)
+     setDescription(initialDescription.get(), DescriptionType::Local, [protectedThis = Ref(*this), this, initialSDP = WTFMove(initialSDP), remoteDescriptionSdp = WTFMove(remoteDescriptionSdp), remoteDescriptionSdpType = WTFMove(remoteDescriptionSdpType)](const GstSDPMessage& message) {
+         if (protectedThis->isStopped())
+             return;
+@@ -795,6 +869,21 @@
+         if (!peerConnectionBackend)
+             return;
+ 
++        // Configure each outgoing media source for the codec that was agreed and link it to
++        // webrtcbin - once webrtcbin has applied the description, so its transceivers carry
++        // the media ids and transports this description gave them. Linking before that
++        // lands the source on a transceiver webrtcbin has not associated, which it never
++        // connects to its RTP session: the sender pad stays blocked for the rest of the
++        // call and the track sends nothing at all, while the signalling, ICE and the
++        // server's view of the publication all look healthy.
++        //
++        // This includes an offer of our own: webrtcbin builds a transceiver's send path
++        // while applying the description that names it, and only for a transceiver that has
++        // a pad by then. RTP pushed into a pad attached later goes nowhere - the SRTP
++        // encoder is never given an RTP sink - so nothing reaches the network. What the
++        // answer then agrees to is picked up in doSetRemoteDescription.
++        linkOutgoingSources(const_cast<GstSDPMessage*>(&message));
++
+         auto descriptions = descriptionsFromWebRTCBin(m_webrtcBin.get(), GatherSignalingState::Yes);
+ 
+         // The initial description we pass to webrtcbin might actually be invalid or empty SDP, so
+@@ -886,8 +975,8 @@
+             return;
+         }
+ 
+-        // Make sure each outgoing media source is configured using the proposed codec and linked to webrtcbin.
+-        linkOutgoingSources(sdpMessage.get());
++        // Nothing to link yet: see the local description above - the sources are linked once
++        // webrtcbin has applied the description.
+     }
+ 
+     setDescription(&description, DescriptionType::Remote, [protectedThis = Ref(*this), this, initialSDP = WTFMove(initialSDP), localDescriptionSdp = WTFMove(localDescriptionSdp), localDescriptionSdpType = WTFMove(localDescriptionSdpType)](const GstSDPMessage& message) {
+@@ -896,6 +985,9 @@
+         auto peerConnectionBackend = this->peerConnectionBackend();
+         if (!peerConnectionBackend)
+             return;
++        linkOutgoingSources(const_cast<GstSDPMessage*>(&message));
++        adoptNegotiatedCodecs(&message);
++
+         processSDPMessage(&message, [this](unsigned, StringView mid, const auto* media) {
+             const char* mediaType = gst_sdp_media_get_media(media);
+             m_mediaForMid.set(mid.toString(), g_str_equal(mediaType, "audio") ? RealtimeMediaSource::Type::Audio : RealtimeMediaSource::Type::Video);
+@@ -1106,12 +1198,90 @@
+     auto sourceBin = source.bin();
+     gst_bin_add(GST_BIN_CAST(m_pipeline.get()), sourceBin.get());
+ 
++    // Keep the bin out of the pipeline's state changes until the source has been linked
++    // (start() unlocks it and brings it up). Otherwise it starts pushing as soon as the
++    // pipeline is told to play - into a path that is not linked yet - and that flow error
++    // stops its streaming thread for good: the track then sends nothing for the rest of the
++    // call, with only a stray "streaming stopped, reason not-linked" to show for it.
++    gst_element_set_locked_state(sourceBin.get(), TRUE);
++    gst_element_set_state(sourceBin.get(), GST_STATE_READY);
++
+ #ifndef GST_DISABLE_GST_DEBUG
+     auto dotFileName = makeString(unsafeSpan(GST_OBJECT_NAME(m_pipeline.get())), ".outgoing"_s);
+     GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(m_pipeline.get()), GST_DEBUG_GRAPH_SHOW_ALL, dotFileName.utf8().data());
+ #endif
+ }
+ 
++// The pad to send an m-line's media through: webrtcbin binds a pad requested by the name
++// "sink_<m-line>" to the transceiver it has for that m-line, which is the transceiver this
++// description names and the one it will connect to its RTP session.
++//
++// Letting webrtcbin pick a pad instead (requestPad) gets one on a transceiver of its own,
++// which this description knows nothing about: it has no mid when the answer arrives, so
++// webrtcbin skips connecting its input stream ("transceiver not associated") and never
++// returns to it. The pad then stays blocked for the rest of the call, the queues behind it
++// fill, and the track sends nothing at all - while the signalling, ICE, and the server's
++// view of the publication all look healthy.
++//
++// No caps are passed with the request: webrtcbin refuses the pad when they do not intersect
++// the codec preferences the transceiver already carries, and the payload type picked for a
++// fresh sender is not the one that was negotiated.
++GRefPtr<GstPad> GStreamerMediaEndpoint::requestPadForMLine(unsigned mLineIndex, const GRefPtr<GstCaps>& allowedCaps, const String& mediaStreamID)
++{
++    auto padName = makeString("sink_"_s, mLineIndex);
++    auto sinkPad = adoptGRef(gst_element_request_pad_simple(m_webrtcBin.get(), padName.ascii().data()));
++    if (!sinkPad) {
++        GST_DEBUG_OBJECT(m_pipeline.get(), "webrtcbin has no sender pad to give for m-line %u, asking it to pick one", mLineIndex);
++        return requestPad(allowedCaps, mediaStreamID);
++    }
++
++    GST_DEBUG_OBJECT(m_pipeline.get(), "Sending m-line %u through %" GST_PTR_FORMAT, mLineIndex, sinkPad.get());
++    if (!mediaStreamID.isEmpty() && gstObjectHasProperty(sinkPad.get(), "msid"_s))
++        g_object_set(sinkPad.get(), "msid", mediaStreamID.ascii().data(), nullptr);
++
++    // Tell the transceiver what is actually going to come through this pad. Its preferences
++    // still describe what we offered, and an answer is free to renumber the payload type -
++    // which an SFU does - so the pad would otherwise advertise a format the packetizer never
++    // produces, the link would fail for want of a common format, and the source would push
++    // into nothing: the track sends silence with nothing in the logs but a stream error.
++    GRefPtr<GstWebRTCRTPTransceiver> transceiver;
++    g_object_get(sinkPad.get(), "transceiver", &transceiver.outPtr(), nullptr);
++    if (transceiver)
++        g_object_set(transceiver.get(), "codec-preferences", allowedCaps.get(), nullptr);
++    return sinkPad;
++}
++
++// The payload type this session already uses for a codec, taken from the transceivers that
++// have one. Numbering a codec the same way in every m-line is what browsers do, and it
++// keeps an answer from having to renumber ours - which would leave the sender packetizing
++// something the far end does not recognise.
++std::optional<int> GStreamerMediaEndpoint::payloadTypeForCodecInUse(StringView encodingName)
++{
++    std::optional<int> result;
++    auto wanted = encodingName.convertToASCIIUppercase();
++    forEachTransceiver(m_webrtcBin, [&](auto&& transceiver) -> bool {
++        GRefPtr<GstCaps> codecPreferences;
++        g_object_get(transceiver.get(), "codec-preferences", &codecPreferences.outPtr(), nullptr);
++        if (!codecPreferences)
++            return false;
++
++        for (unsigned i = 0; i < gst_caps_get_size(codecPreferences.get()); i++) {
++            auto* structure = gst_caps_get_structure(codecPreferences.get(), i);
++            auto name = gstStructureGetString(structure, "encoding-name"_s);
++            if (!name || name.convertToASCIIUppercase() != wanted)
++                continue;
++            if (auto payloadType = gstStructureGet<int>(structure, "payload"_s)) {
++                result = *payloadType;
++                return true;
++            }
++        }
++        return false;
++    });
++    if (result)
++        GST_DEBUG_OBJECT(m_pipeline.get(), "This session already carries %s as payload type %d", encodingName.utf8().data(), *result);
++    return result;
++}
++
+ GRefPtr<GstPad> GStreamerMediaEndpoint::requestPad(const GRefPtr<GstCaps>& allowedCaps, const String& mediaStreamID)
+ {
+     GST_DEBUG_OBJECT(m_pipeline.get(), "Requesting sink pad for %" GST_PTR_FORMAT " and mediaStreamID %s", allowedCaps.get(), mediaStreamID.ascii().data());
+@@ -1125,8 +1295,15 @@
+             continue;
+         }
+         std::optional<int> payloadType;
+-        if (auto encodingName = gstStructureGetString(structure, "encoding-name"_s))
++        if (auto encodingName = gstStructureGetString(structure, "encoding-name"_s)) {
+             payloadType = payloadTypeForEncodingName(encodingName);
++            // A payload type names a codec for the whole session, not for one m-line: that
++            // is how browsers number them, and a server is entitled to renumber ours to
++            // match. Reuse the number this session already uses for this codec rather than
++            // taking the next free one, so what we offer is what comes back.
++            if (!payloadType)
++                payloadType = payloadTypeForCodecInUse(encodingName);
++        }
+ 
+         if (!payloadType) {
+             if (availablePayloadType < 128)
+@@ -1670,9 +1847,20 @@
+     int payloadType = pickAvailablePayloadType();
+     auto msid = msidBuilder.toString();
+     bool msidSet = false;
+-    auto caps = capsFromRtpCapabilities({ .codecs = codecs, .headerExtensions = rtpExtensions }, [&payloadType, &msid, &msidSet](GstStructure* structure) {
+-        if (!gst_structure_has_field(structure, "payload"))
+-            gst_structure_set(structure, "payload", G_TYPE_INT, payloadType++, nullptr);
++    auto caps = capsFromRtpCapabilities({ .codecs = codecs, .headerExtensions = rtpExtensions }, [&payloadType, &msid, &msidSet, this](GstStructure* structure) {
++        if (!gst_structure_has_field(structure, "payload")) {
++            // Number a codec the way the rest of this session already numbers it. A payload
++            // type names a codec for the whole session, not for one m-line, which is how
++            // browsers assign them; numbering per m-line instead invites the answer to
++            // renumber ours, and then the sender packetizes something the far end does not
++            // recognise and the call carries no audio.
++            std::optional<int> reusedPayloadType;
++            if (auto encodingName = gstStructureGetString(structure, "encoding-name"_s))
++                reusedPayloadType = payloadTypeForCodecInUse(encodingName);
++            gst_structure_set(structure, "payload", G_TYPE_INT, reusedPayloadType.value_or(payloadType), nullptr);
++            if (!reusedPayloadType)
++                payloadType++;
++        }
+         if (msidSet)
+             return;
+         if (msid.isEmpty())
+@@ -2191,6 +2379,56 @@
+     });
+ }
+ 
++// Browsers name the synchronisation source of every track they send ("a=ssrc:N cname:…"
++// and "a=ssrc:N msid:…"), and an SFU uses those lines to tie arriving media to the track
++// that was published. webrtcbin only writes them when the media caps carry an ssrc, which
++// they do not before the packetizers exist, so the sections go out anonymous and the
++// publication never completes. Fill them in from the source that will do the sending.
++void GStreamerMediaEndpoint::announceOutgoingSSRCs(GstSDPMessage* sdp)
++{
++    unsigned totalMedias = gst_sdp_message_medias_len(sdp);
++    for (unsigned i = 0; i < totalMedias; i++) {
++        auto* media = const_cast<GstSDPMedia*>(gst_sdp_message_get_media(sdp, i));
++
++        bool isSending = false;
++        bool hasSSRC = false;
++        unsigned totalAttributes = gst_sdp_media_attributes_len(media);
++        for (unsigned j = 0; j < totalAttributes; j++) {
++            const auto* attribute = gst_sdp_media_get_attribute(media, j);
++            if (!g_strcmp0(attribute->key, "sendonly") || !g_strcmp0(attribute->key, "sendrecv"))
++                isSending = true;
++            else if (!g_strcmp0(attribute->key, "ssrc"))
++                hasSSRC = true;
++        }
++        if (!isSending || hasSSRC)
++            continue;
++
++        auto msid = String::fromUTF8(gst_sdp_media_get_attribute_val(media, "msid"));
++        if (msid.isEmpty())
++            continue;
++
++        for (auto& source : m_unlinkedOutgoingSources) {
++            if (!source)
++                continue;
++            const auto& track = source->track();
++            if (!track)
++                continue;
++            if (makeString(source->mediaStreamID(), ' ', track->id()) != msid)
++                continue;
++
++            auto ssrc = source->announcedSSRC();
++            if (!ssrc)
++                break;
++
++            auto cname = makeString(ssrc, "-cname"_s);
++            gst_sdp_media_add_attribute(media, "ssrc", makeString(ssrc, " cname:"_s, cname).utf8().data());
++            gst_sdp_media_add_attribute(media, "ssrc", makeString(ssrc, " msid:"_s, msid).utf8().data());
++            GST_DEBUG_OBJECT(m_pipeline.get(), "Announced ssrc %u for msid %s", ssrc, msid.utf8().data());
++            break;
++        }
++    }
++}
++
+ void GStreamerMediaEndpoint::createSessionDescriptionSucceeded(GUniquePtr<GstWebRTCSessionDescription>&& description)
+ {
+     callOnMainThread([protectedThis = Ref(*this), this, description = WTFMove(description)] {
+@@ -2200,6 +2438,9 @@
+         if (!peerConnectionBackend)
+             return;
+ 
++        if (description->type == GST_WEBRTC_SDP_TYPE_OFFER)
++            announceOutgoingSSRCs(description->sdp);
++
+         auto sdpString = sdpAsString(description->sdp);
+ #ifndef GST_DISABLE_GST_DEBUG
+         GST_DEBUG_OBJECT(pipeline(), "Created SDP %s: %s", description->type == GST_WEBRTC_SDP_TYPE_OFFER ? "offer" : "answer", sdpString.utf8().data());
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerMediaEndpoint.h
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerMediaEndpoint.h
+@@ -167,6 +167,7 @@
+     void processSDPMessage(const GstSDPMessage*, Function<void(unsigned index, StringView mid, const GstSDPMedia*)>);
+ 
+     WARN_UNUSED_RETURN GRefPtr<GstPad> requestPad(const GRefPtr<GstCaps>&, const String& mediaStreamID);
++    WARN_UNUSED_RETURN GRefPtr<GstPad> requestPadForMLine(unsigned mLineIndex, const GRefPtr<GstCaps>&, const String& mediaStreamID);
+ 
+     std::optional<bool> isIceGatheringComplete(const String& currentLocalDescription);
+ 
+@@ -186,6 +187,8 @@
+ #endif
+ 
+     void linkOutgoingSources(GstSDPMessage*);
++    void adoptNegotiatedCodecs(const GstSDPMessage*);
++    std::optional<int> payloadTypeForCodecInUse(StringView encodingName);
+ 
+     String trackIdFromSDPMedia(const GstSDPMedia&);
+ 
+@@ -224,6 +227,8 @@
+ 
+     Vector<RefPtr<MediaStreamTrackPrivate>> m_pendingIncomingTracks;
+ 
++    void announceOutgoingSSRCs(GstSDPMessage*);
++
+     Vector<RefPtr<RealtimeOutgoingMediaSourceGStreamer>> m_unlinkedOutgoingSources;
+ 
+     bool m_isGatheringRTCLogs { false };
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpReceiverBackend.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpReceiverBackend.cpp
+@@ -140,7 +140,10 @@
+ 
+ Ref<RTCRtpTransformBackend> GStreamerRtpReceiverBackend::rtcRtpTransformBackend()
+ {
+-    return GStreamerRtpReceiverTransformBackend::create(m_rtcReceiver);
++    GstWebRTCKind kind = GST_WEBRTC_KIND_UNKNOWN;
++    g_object_get(m_rtcTransceiver.get(), "kind", &kind, nullptr);
++    auto mediaType = kind == GST_WEBRTC_KIND_VIDEO ? RTCRtpTransformBackend::MediaType::Video : RTCRtpTransformBackend::MediaType::Audio;
++    return GStreamerRtpReceiverTransformBackend::create(m_rtcReceiver, m_rtcTransceiver, mediaType);
+ }
+ 
+ std::unique_ptr<RTCDtlsTransportBackend> GStreamerRtpReceiverBackend::dtlsTransportBackend()
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpReceiverTransformBackend.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpReceiverTransformBackend.cpp
+@@ -22,20 +22,16 @@
+ 
+ #if ENABLE(WEB_RTC) && USE(GSTREAMER_WEBRTC)
+ 
+-#include "NotImplemented.h"
+-
+ namespace WebCore {
+ 
+-static inline GStreamerRtpReceiverTransformBackend::MediaType mediaTypeFromReceiver(GstWebRTCRTPReceiver*)
+-{
+-    notImplemented();
+-    return RTCRtpTransformBackend::MediaType::Video;
+-}
+-
+-GStreamerRtpReceiverTransformBackend::GStreamerRtpReceiverTransformBackend(const GRefPtr<GstWebRTCRTPReceiver>& rtcReceiver)
+-    : GStreamerRtpTransformBackend(mediaTypeFromReceiver(rtcReceiver.get()), Side::Receiver)
++GStreamerRtpReceiverTransformBackend::GStreamerRtpReceiverTransformBackend(const GRefPtr<GstWebRTCRTPReceiver>& rtcReceiver, const GRefPtr<GstWebRTCRTPTransceiver>& rtcTransceiver, MediaType mediaType)
++    : GStreamerRtpTransformBackend(mediaType, Side::Receiver)
+     , m_rtcReceiver(rtcReceiver)
++    , m_rtcTransceiver(rtcTransceiver)
+ {
++    // The transceiver is what the incoming track processor knows itself by, so it is the
++    // name both sides of the tap use.
++    adoptTapFor(m_rtcTransceiver.get());
+ }
+ 
+ GStreamerRtpReceiverTransformBackend::~GStreamerRtpReceiverTransformBackend()
+@@ -45,14 +41,14 @@
+ void GStreamerRtpReceiverTransformBackend::setTransformableFrameCallback(Callback&& callback)
+ {
+     setInputCallback(WTFMove(callback));
+-    notImplemented();
+ }
+ 
+ bool GStreamerRtpReceiverTransformBackend::requestKeyFrame(const String&)
+ {
+     ASSERT(mediaType() == MediaType::Video);
+-    notImplemented();
+-    return true;
++    // Asking the other end for a key frame is a picture-loss indication, which webrtcbin
++    // sends on its own when the decoder reports one.
++    return false;
+ }
+ 
+ } // namespace WebCore
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpReceiverTransformBackend.h
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpReceiverTransformBackend.h
+@@ -30,17 +30,18 @@
+ 
+ class GStreamerRtpReceiverTransformBackend final : public GStreamerRtpTransformBackend {
+ public:
+-    static Ref<GStreamerRtpReceiverTransformBackend> create(const GRefPtr<GstWebRTCRTPReceiver>& receiver) { return adoptRef(*new GStreamerRtpReceiverTransformBackend(receiver)); }
++    static Ref<GStreamerRtpReceiverTransformBackend> create(const GRefPtr<GstWebRTCRTPReceiver>& receiver, const GRefPtr<GstWebRTCRTPTransceiver>& transceiver, MediaType mediaType) { return adoptRef(*new GStreamerRtpReceiverTransformBackend(receiver, transceiver, mediaType)); }
+     ~GStreamerRtpReceiverTransformBackend();
+ 
+ private:
+-    explicit GStreamerRtpReceiverTransformBackend(const GRefPtr<GstWebRTCRTPReceiver>&);
++    GStreamerRtpReceiverTransformBackend(const GRefPtr<GstWebRTCRTPReceiver>&, const GRefPtr<GstWebRTCRTPTransceiver>&, MediaType);
+ 
+     // RTCRtpTransformBackend
+     void setTransformableFrameCallback(Callback&&) final;
+     bool requestKeyFrame(const String&) final;
+ 
+     GRefPtr<GstWebRTCRTPReceiver> m_rtcReceiver;
++    GRefPtr<GstWebRTCRTPTransceiver> m_rtcTransceiver;
+ };
+ 
+ } // namespace WebCore
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpSenderBackend.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpSenderBackend.cpp
+@@ -284,7 +284,11 @@
+ 
+ Ref<RTCRtpTransformBackend> GStreamerRtpSenderBackend::rtcRtpTransformBackend()
+ {
+-    return GStreamerRtpSenderTransformBackend::create(m_rtcSender);
++    auto mediaType = videoSource() ? RTCRtpTransformBackend::MediaType::Video : RTCRtpTransformBackend::MediaType::Audio;
++    gpointer tapOwner = videoSource() ? static_cast<gpointer>(videoSource()) : static_cast<gpointer>(audioSource());
++    if (!tapOwner)
++        tapOwner = m_rtcSender.get();
++    return GStreamerRtpSenderTransformBackend::create(m_rtcSender, mediaType, tapOwner);
+ }
+ 
+ void GStreamerRtpSenderBackend::setMediaStreamIds(const FixedVector<String>&)
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpSenderTransformBackend.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpSenderTransformBackend.cpp
+@@ -23,23 +23,23 @@
+ #if ENABLE(WEB_RTC) && USE(GSTREAMER_WEBRTC)
+ 
+ #include "ContextDestructionObserverInlines.h"
+-#include "NotImplemented.h"
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(GStreamerRtpSenderTransformBackend);
+ 
+-static inline GStreamerRtpSenderTransformBackend::MediaType mediaTypeFromSender(GstWebRTCRTPSender*)
+-{
+-    notImplemented();
+-    return RTCRtpTransformBackend::MediaType::Video;
+-}
+-
+-GStreamerRtpSenderTransformBackend::GStreamerRtpSenderTransformBackend(const GRefPtr<GstWebRTCRTPSender>& rtcSender)
+-    : GStreamerRtpTransformBackend(mediaTypeFromSender(rtcSender.get()), Side::Sender)
++// The media type is not readable from a GstWebRTCRTPSender, so it comes from the sender
++// backend, which knows whether it is sending audio or video.
++GStreamerRtpSenderTransformBackend::GStreamerRtpSenderTransformBackend(const GRefPtr<GstWebRTCRTPSender>& rtcSender, MediaType mediaType, gpointer tapOwner)
++    : GStreamerRtpTransformBackend(mediaType, Side::Sender)
+     , m_rtcSender(rtcSender)
+ {
++    // The tap is named by the outgoing source, which is what this sender and the pipeline
++    // have in common and what stays the same across renegotiation - the GstWebRTCRTPSender
++    // this backend was built with does not: webrtcbin makes a new one for the new
++    // transceiver and nothing updates the sender held here.
++    adoptTapFor(tapOwner);
+ }
+ 
+ GStreamerRtpSenderTransformBackend::~GStreamerRtpSenderTransformBackend()
+@@ -49,14 +49,17 @@
+ void GStreamerRtpSenderTransformBackend::setTransformableFrameCallback(Callback&& callback)
+ {
+     setInputCallback(WTFMove(callback));
+-    notImplemented();
+ }
+ 
+ bool GStreamerRtpSenderTransformBackend::requestKeyFrame(const String&)
+ {
+     ASSERT(mediaType() == MediaType::Video);
+-    notImplemented();
+-    return true;
++    // The encoder is upstream of the point frames are tapped, so asking it for a key frame
++    // is an event sent back the way they came.
++    auto* tap = this->tap();
++    if (!tap)
++        return false;
++    return tap->requestKeyFrame();
+ }
+ 
+ } // namespace WebCore
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpSenderTransformBackend.h
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpSenderTransformBackend.h
+@@ -34,11 +34,11 @@
+ class GStreamerRtpSenderTransformBackend final : public GStreamerRtpTransformBackend {
+     WTF_MAKE_TZONE_ALLOCATED(GStreamerRtpSenderTransformBackend);
+ public:
+-    static Ref<GStreamerRtpSenderTransformBackend> create(const GRefPtr<GstWebRTCRTPSender>& sender) { return adoptRef(*new GStreamerRtpSenderTransformBackend(sender)); }
++    static Ref<GStreamerRtpSenderTransformBackend> create(const GRefPtr<GstWebRTCRTPSender>& sender, MediaType mediaType, gpointer tapOwner) { return adoptRef(*new GStreamerRtpSenderTransformBackend(sender, mediaType, tapOwner)); }
+     ~GStreamerRtpSenderTransformBackend();
+ 
+ private:
+-    explicit GStreamerRtpSenderTransformBackend(const GRefPtr<GstWebRTCRTPSender>&);
++    GStreamerRtpSenderTransformBackend(const GRefPtr<GstWebRTCRTPSender>&, MediaType, gpointer tapOwner);
+ 
+     // RTCRtpTransformBackend
+     void setTransformableFrameCallback(Callback&&) final;
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpTransformBackend.cpp
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpTransformBackend.cpp
+@@ -22,26 +22,361 @@
+ 
+ #if ENABLE(WEB_RTC) && USE(GSTREAMER_WEBRTC)
+ 
+-#include "NotImplemented.h"
++#include <gst/video/video-event.h>
++#include <wtf/HashMap.h>
++#include <wtf/NeverDestroyed.h>
++
++GST_DEBUG_CATEGORY_STATIC(webkit_webrtc_encoded_transform_debug);
++#define GST_CAT_DEFAULT webkit_webrtc_encoded_transform_debug
+ 
+ namespace WebCore {
+ 
++static void ensureDebugCategory()
++{
++    static std::once_flag onceFlag;
++    std::call_once(onceFlag, [] {
++        GST_DEBUG_CATEGORY_INIT(webkit_webrtc_encoded_transform_debug, "webkitwebrtcencodedtransform", 0, "WebKit WebRTC Encoded Transform");
++    });
++}
++
++// --- GStreamerRtpTransformableFrame -------------------------------------------------------
++
++GStreamerRtpTransformableFrame::GStreamerRtpTransformableFrame(GRefPtr<GstBuffer>&& buffer, const StreamDescription& description, bool isAudio, uint64_t token)
++    : m_buffer(WTFMove(buffer))
++    , m_description(description)
++    , m_token(token)
++    , m_isAudio(isAudio)
++{
++    if (!m_buffer)
++        return;
++
++    GstMappedBuffer mappedBuffer(m_buffer.get(), GST_MAP_READ);
++    if (mappedBuffer)
++        m_data = mappedBuffer.createVector();
++
++    // A delta unit is a frame that depends on earlier ones; anything else starts a new one.
++    // Audio has no such distinction, and script expects every audio frame to be a key frame.
++    m_isKeyFrame = m_isAudio || !GST_BUFFER_FLAG_IS_SET(m_buffer.get(), GST_BUFFER_FLAG_DELTA_UNIT);
++
++    auto presentationTime = GST_BUFFER_PTS(m_buffer.get());
++    if (GST_CLOCK_TIME_IS_VALID(presentationTime) && m_description.clockRate > 0)
++        m_rtpTimestamp = static_cast<uint32_t>(gst_util_uint64_scale_round(presentationTime, m_description.clockRate, GST_SECOND));
++}
++
++GStreamerRtpTransformableFrame::~GStreamerRtpTransformableFrame() = default;
++
++void GStreamerRtpTransformableFrame::setData(std::span<const uint8_t> data)
++{
++    m_data.clear();
++    m_data.append(data);
++}
++
++RTCEncodedAudioFrameMetadata GStreamerRtpTransformableFrame::audioMetadata() const
++{
++    return { m_description.ssrc, m_description.payloadType, Vector<uint32_t> { }, std::nullopt, m_rtpTimestamp, m_description.mimeType };
++}
++
++RTCEncodedVideoFrameMetadata GStreamerRtpTransformableFrame::videoMetadata() const
++{
++    return { std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt, m_description.ssrc, m_description.payloadType, Vector<uint32_t> { }, std::nullopt, m_rtpTimestamp, m_description.mimeType };
++}
++
++Ref<RTCRtpTransformableFrame> GStreamerRtpTransformableFrame::clone()
++{
++    // A clone is script's own copy; it is not the frame the pipeline is waiting for, so it
++    // carries no token.
++    Ref clone = adoptRef(*new GStreamerRtpTransformableFrame(GRefPtr<GstBuffer>(m_buffer), m_description, m_isAudio, 0));
++    clone->m_data = m_data;
++    clone->m_rtpTimestamp = m_rtpTimestamp;
++    clone->m_isKeyFrame = m_isKeyFrame;
++    return clone;
++}
++
++// Metadata is what the pipeline says it is; a transform cannot move a frame to another
++// stream, so the options script passes are kept for the record and otherwise ignored.
++void GStreamerRtpTransformableFrame::setOptions(const RTCEncodedAudioFrameMetadata&)
++{
++}
++
++void GStreamerRtpTransformableFrame::setOptions(const RTCEncodedVideoFrameMetadata&)
++{
++}
++
++GRefPtr<GstBuffer> GStreamerRtpTransformableFrame::buildBuffer() const
++{
++    if (!m_buffer)
++        return nullptr;
++
++    auto buffer = adoptGRef(gst_buffer_new_allocate(nullptr, m_data.size(), nullptr));
++    if (!buffer)
++        return nullptr;
++
++    if (!m_data.isEmpty()) {
++        GstMappedBuffer mappedBuffer(buffer.get(), GST_MAP_WRITE);
++        if (!mappedBuffer)
++            return nullptr;
++        memcpySpan(mappedBuffer.mutableSpan<uint8_t>(), m_data.span());
++    }
++
++    gst_buffer_copy_into(buffer.get(), m_buffer.get(), static_cast<GstBufferCopyFlags>(GST_BUFFER_COPY_FLAGS | GST_BUFFER_COPY_TIMESTAMPS | GST_BUFFER_COPY_META), 0, 0);
++    return buffer;
++}
++
++// --- GStreamerEncodedFrameTap -------------------------------------------------------------
++
++// Taps outlive neither the pipeline nor the transform, but either side can be the first to
++// ask for one, so they are held here until both are gone.
++static Lock& tapRegistryLock()
++{
++    static NeverDestroyed<Lock> lock;
++    return lock.get();
++}
++
++static HashMap<gpointer, Ref<GStreamerEncodedFrameTap>>& tapRegistry() WTF_REQUIRES_LOCK(tapRegistryLock())
++{
++    static NeverDestroyed<HashMap<gpointer, Ref<GStreamerEncodedFrameTap>>> registry;
++    return registry.get();
++}
++
++Ref<GStreamerEncodedFrameTap> GStreamerEncodedFrameTap::tapFor(gpointer owner, MediaType mediaType, Side side)
++{
++    ensureDebugCategory();
++    Locker locker { tapRegistryLock() };
++    return tapRegistry().ensure(owner, [&] {
++        return adoptRef(*new GStreamerEncodedFrameTap(mediaType, side));
++    }).iterator->value.copyRef();
++}
++
++void GStreamerEncodedFrameTap::forget(gpointer owner)
++{
++    RefPtr<GStreamerEncodedFrameTap> tap;
++    {
++        Locker locker { tapRegistryLock() };
++        tap = tapRegistry().take(owner);
++    }
++    if (tap)
++        tap->detach();
++}
++
++GStreamerEncodedFrameTap::~GStreamerEncodedFrameTap()
++{
++    detach();
++}
++
++// More than this many frames waiting to go back into the pipeline means the pipeline is not
++// taking them (not connected yet, or gone), and holding on to more would only grow. Two
++// seconds of audio frames is enough to ride out a stall worth riding out.
++static constexpr unsigned maximumPendingFrames = 100;
++
++void GStreamerEncodedFrameTap::attach(const GRefPtr<GstPad>& source)
++{
++    Locker locker { m_padLock };
++    removeProbe();
++    m_sourcePad = source;
++    if (!m_sourcePad)
++        return;
++
++    GST_DEBUG_OBJECT(m_sourcePad.get(), "Encoded frame tap attached (%s side)", m_side == Side::Sender ? "sender" : "receiver");
++    m_probeId = gst_pad_add_probe(m_sourcePad.get(), static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST), [](GstPad*, GstPadProbeInfo* info, gpointer userData) -> GstPadProbeReturn {
++        return static_cast<GStreamerEncodedFrameTap*>(userData)->handleProbe(info);
++    }, this, nullptr);
++}
++
++void GStreamerEncodedFrameTap::detach()
++{
++    {
++        Locker locker { m_padLock };
++        removeProbe();
++        m_sourcePad = nullptr;
++    }
++    // Let go of a frame still waiting for script, so the streaming thread is not left
++    // waiting for an answer that is no longer coming.
++    Locker locker { m_slotLock };
++    m_awaitedToken = 0;
++    m_slotFilled = false;
++    m_slotBuffer = nullptr;
++    m_slotCondition.notifyAll();
++}
++
++void GStreamerEncodedFrameTap::removeProbe()
++{
++    if (!m_probeId)
++        return;
++    if (m_sourcePad)
++        gst_pad_remove_probe(m_sourcePad.get(), m_probeId);
++    m_probeId = 0;
++}
++
++void GStreamerEncodedFrameTap::setStreamDescription(const GStreamerRtpTransformableFrame::StreamDescription& description)
++{
++    Locker locker { m_descriptionLock };
++    m_description = description;
++}
++
++void GStreamerEncodedFrameTap::setCallback(Callback&& callback)
++{
++    Locker locker { m_callbackLock };
++    m_callback = WTFMove(callback);
++}
++
++void GStreamerEncodedFrameTap::clearCallback()
++{
++    Locker locker { m_callbackLock };
++    m_callback = { };
++}
++
++GstPadProbeReturn GStreamerEncodedFrameTap::handleProbe(GstPadProbeInfo* info)
++{
++    // A buffer list would have to be taken apart and transformed frame by frame; neither an
++    // encoder nor a depayloader sends one, so there is nothing to take apart.
++    if (info->type & GST_PAD_PROBE_TYPE_BUFFER_LIST) [[unlikely]] {
++        GST_WARNING("Dropping a buffer list: encoded frames are transformed one at a time");
++        return GST_PAD_PROBE_DROP;
++    }
++
++    auto* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
++    if (!buffer)
++        return GST_PAD_PROBE_OK;
++
++    auto transformed = transformBuffer(buffer);
++    // No transform installed: these frames are none of our business.
++    if (transformed.get() == buffer)
++        return GST_PAD_PROBE_OK;
++
++    // Script was asked and did not answer in time. Sending the frame on as it stands would
++    // be sending it in the clear, which is the one thing a transform exists to prevent.
++    if (!transformed)
++        return GST_PAD_PROBE_DROP;
++
++    gst_buffer_unref(buffer);
++    GST_PAD_PROBE_INFO_DATA(info) = transformed.leakRef();
++    return GST_PAD_PROBE_OK;
++}
++
++// How long the streaming thread waits for script. Frames come every 20 ms (audio) or so,
++// and one that arrives later than this is of no use to the other end anyway, while waiting
++// longer would stall the capture or playback queued up behind it.
++static constexpr Seconds frameTransformTimeout = 100_ms;
++
++// Returns what should be sent on: the buffer passed in when no transform is installed, a new
++// buffer when script transformed the frame, null when script did not answer in time.
++GRefPtr<GstBuffer> GStreamerEncodedFrameTap::transformBuffer(GstBuffer* buffer)
++{
++    uint64_t token = 0;
++    {
++        Locker locker { m_callbackLock };
++        if (!m_callback)
++            return buffer;
++
++        GStreamerRtpTransformableFrame::StreamDescription description;
++        {
++            Locker descriptionLocker { m_descriptionLock };
++            description = m_description;
++        }
++
++        token = m_nextToken++;
++        {
++            Locker slotLocker { m_slotLock };
++            m_awaitedToken = token;
++            m_slotFilled = false;
++            m_slotBuffer = nullptr;
++        }
++
++        m_callback(GStreamerRtpTransformableFrame::create(GRefPtr<GstBuffer>(buffer), description, m_mediaType == MediaType::Audio, token));
++    }
++
++    GRefPtr<GstBuffer> transformed;
++    {
++        Locker locker { m_slotLock };
++        auto deadline = MonotonicTime::now() + frameTransformTimeout;
++        while (!m_slotFilled && m_awaitedToken == token) {
++            if (!m_slotCondition.waitUntil(m_slotLock, deadline))
++                break;
++        }
++        if (m_slotFilled && m_awaitedToken == token)
++            transformed = std::exchange(m_slotBuffer, GRefPtr<GstBuffer> { });
++        m_awaitedToken = 0;
++        m_slotFilled = false;
++        m_slotBuffer = nullptr;
++    }
++
++    if (!transformed) {
++        auto dropped = m_framesDropped.exchangeAdd(1) + 1;
++        if (dropped == 1 || !(dropped % 100))
++            GST_WARNING("Tap %p (%s side): %" PRIu64 " frames dropped, script did not transform them in time", this, m_side == Side::Sender ? "sender" : "receiver", dropped);
++        return nullptr;
++    }
++
++    auto framesOut = m_framesOut.exchangeAdd(1) + 1;
++    if (!(framesOut % 1000))
++        GST_DEBUG("Tap %p (%s side): %" PRIu64 " frames transformed, %" PRIu64 " dropped", this, m_side == Side::Sender ? "sender" : "receiver", framesOut, m_framesDropped.load());
++    return transformed;
++}
++
++// Video only: the encoder is upstream of the tap, so asking for a key frame is an event
++// sent back the way the frames came.
++bool GStreamerEncodedFrameTap::requestKeyFrame()
++{
++    GRefPtr<GstPad> source;
++    {
++        Locker locker { m_padLock };
++        source = m_sourcePad;
++    }
++    if (!source)
++        return false;
++    return gst_pad_send_event(source.get(), gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE, TRUE, 1));
++}
++
++// Called on whatever thread the transform runs on, once script is done with the frame. The
++// streaming thread is waiting for exactly this frame, so hand it over and wake it.
++void GStreamerEncodedFrameTap::writeTransformedFrame(RTCRtpTransformableFrame& frame)
++{
++    auto& gstFrame = static_cast<GStreamerRtpTransformableFrame&>(frame);
++    auto buffer = gstFrame.buildBuffer();
++    if (!buffer)
++        return;
++
++    Locker locker { m_slotLock };
++    // A frame the pipeline has already given up on, or one from a previous attachment.
++    if (!m_awaitedToken || m_awaitedToken != gstFrame.token())
++        return;
++
++    m_slotBuffer = WTFMove(buffer);
++    m_slotFilled = true;
++    m_slotCondition.notifyOne();
++}
++
++
++// --- GStreamerRtpTransformBackend ---------------------------------------------------------
++
++void GStreamerRtpTransformBackend::adoptTapFor(gpointer owner)
++{
++    m_tap = GStreamerEncodedFrameTap::tapFor(owner, m_mediaType, m_side);
++}
++
+ void GStreamerRtpTransformBackend::setInputCallback(Callback&& callback)
+ {
+-    Locker holdLock { m_inputCallbackLock };
+-    m_inputCallback = WTFMove(callback);
++    if (!m_tap) {
++        GST_WARNING("An encoded transform was installed on a %s with no pipeline to tap", m_side == Side::Sender ? "sender" : "receiver");
++        return;
++    }
++    m_tap->setCallback(WTFMove(callback));
+ }
+ 
+ void GStreamerRtpTransformBackend::clearTransformableFrameCallback()
+ {
+-    setInputCallback({ });
++    if (m_tap)
++        m_tap->clearCallback();
+ }
+ 
+-void GStreamerRtpTransformBackend::processTransformedFrame(RTCRtpTransformableFrame&)
++void GStreamerRtpTransformBackend::processTransformedFrame(RTCRtpTransformableFrame& frame)
+ {
+-    notImplemented();
++    if (m_tap)
++        m_tap->writeTransformedFrame(frame);
+ }
+ 
+ } // namespace WebCore
+ 
++#undef GST_CAT_DEFAULT
++
+ #endif // ENABLE(WEB_RTC) && USE(GSTREAMER_WEBRTC)
+--- a/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpTransformBackend.h
++++ b/Source/WebCore/Modules/mediastream/gstreamer/GStreamerRtpTransformBackend.h
+@@ -21,16 +21,164 @@
+ 
+ #if ENABLE(WEB_RTC) && USE(GSTREAMER_WEBRTC)
+ 
++#include "GStreamerCommon.h"
+ #include "RTCRtpTransformBackend.h"
++#include "RTCRtpTransformableFrame.h"
++#include <wtf/Atomics.h>
++#include <wtf/Condition.h>
+ #include <wtf/Lock.h>
++#include <wtf/ThreadSafeRefCounted.h>
++#include <wtf/Vector.h>
+ 
+ namespace WebCore {
+ 
++// One encoded frame on its way through the pipeline, handed to script and taken back.
++//
++// The payload is copied out of the buffer so script can replace it with something of a
++// different length - which is the whole point for an encryptor, since it appends a trailer.
++// Everything else the frame carries (presentation time, delta/key flag) comes from the
++// buffer it was built from and is put back on the buffer that leaves.
++class GStreamerRtpTransformableFrame final : public RTCRtpTransformableFrame {
++public:
++    // What the pipeline knows about the stream the frame belongs to. The RTP header is not
++    // around at the point where frames are tapped (it does not exist yet on the way out, and
++    // is already gone on the way in), so the ssrc and payload type are taken from the
++    // transceiver's configuration and the timestamp is computed from the buffer's.
++    struct StreamDescription {
++        uint32_t ssrc { 0 };
++        std::optional<uint8_t> payloadType;
++        int clockRate { 0 };
++        String mimeType;
++    };
++
++    static Ref<GStreamerRtpTransformableFrame> create(GRefPtr<GstBuffer>&& buffer, const StreamDescription& description, bool isAudio, uint64_t token)
++    {
++        return adoptRef(*new GStreamerRtpTransformableFrame(WTFMove(buffer), description, isAudio, token));
++    }
++    ~GStreamerRtpTransformableFrame();
++
++    // Names the frame the pipeline is waiting for, so a frame that script hands back after
++    // the pipeline gave up on it can be told apart and discarded.
++    uint64_t token() const { return m_token; }
++
++    // The buffer to send on, carrying whatever script left in the frame.
++    GRefPtr<GstBuffer> buildBuffer() const;
++
++private:
++    GStreamerRtpTransformableFrame(GRefPtr<GstBuffer>&&, const StreamDescription&, bool isAudio, uint64_t token);
++
++    // RTCRtpTransformableFrame
++    std::span<const uint8_t> data() const final { return m_data.span(); }
++    void setData(std::span<const uint8_t>) final;
++    bool isKeyFrame() const final { return m_isKeyFrame; }
++    uint64_t timestamp() const final { return m_rtpTimestamp; }
++    RTCEncodedAudioFrameMetadata audioMetadata() const final;
++    RTCEncodedVideoFrameMetadata videoMetadata() const final;
++    Ref<RTCRtpTransformableFrame> clone() final;
++    void setOptions(const RTCEncodedAudioFrameMetadata&) final;
++    void setOptions(const RTCEncodedVideoFrameMetadata&) final;
++
++    GRefPtr<GstBuffer> m_buffer;
++    StreamDescription m_description;
++    Vector<uint8_t> m_data;
++    uint32_t m_rtpTimestamp { 0 };
++    uint64_t m_token { 0 };
++    bool m_isAudio { true };
++    bool m_isKeyFrame { true };
++};
++
++// The place in the pipeline where encoded frames are taken out, handed to script, and put
++// back: between encoder and payloader on the way out, between depayloader and parser on the
++// way in. Those are the two points where a buffer is one whole encoded frame with no RTP
++// header in the way, which is what an encoded transform is defined to see.
++//
++// A frame is taken out by dropping the buffer in a pad probe (so the streaming thread is not
++// held while script works) and put back by chaining the replacement into the next element
++// from whichever thread the transform runs on. Frames come back in the order they were sent,
++// because one transform is one worker.
++//
++// The two sides find each other through this class: the pipeline attaches pads to the tap as
++// it builds the elements, script's transform claims the same tap by the GStreamer object both
++// sides know - the sender, or the transceiver - whichever of the two happens first.
++class GStreamerEncodedFrameTap : public ThreadSafeRefCounted<GStreamerEncodedFrameTap> {
++    WTF_MAKE_NONCOPYABLE(GStreamerEncodedFrameTap);
++public:
++    using MediaType = RTCRtpTransformBackend::MediaType;
++    using Side = RTCRtpTransformBackend::Side;
++    using Callback = Function<void(Ref<RTCRtpTransformableFrame>&&)>;
++
++    static Ref<GStreamerEncodedFrameTap> tapFor(gpointer owner, MediaType, Side);
++    static void forget(gpointer owner);
++
++    ~GStreamerEncodedFrameTap();
++
++    void attach(const GRefPtr<GstPad>& source);
++    void detach();
++
++    void setStreamDescription(const GStreamerRtpTransformableFrame::StreamDescription&);
++
++    void setCallback(Callback&&);
++    void clearCallback();
++
++    void writeTransformedFrame(RTCRtpTransformableFrame&);
++
++    // Video only: the encoder sits upstream of the tap, so this is an event sent back up.
++    bool requestKeyFrame();
++
++    MediaType mediaType() const { return m_mediaType; }
++    Side side() const { return m_side; }
++
++private:
++    GStreamerEncodedFrameTap(MediaType mediaType, Side side)
++        : m_mediaType(mediaType)
++        , m_side(side)
++    {
++    }
++
++    GstPadProbeReturn handleProbe(GstPadProbeInfo*);
++    GRefPtr<GstBuffer> transformBuffer(GstBuffer*);
++    void removeProbe() WTF_REQUIRES_LOCK(m_padLock);
++
++    MediaType m_mediaType;
++    Side m_side;
++
++    mutable Lock m_padLock;
++    GRefPtr<GstPad> m_sourcePad WTF_GUARDED_BY_LOCK(m_padLock);
++    unsigned long m_probeId WTF_GUARDED_BY_LOCK(m_padLock) { 0 };
++
++    mutable Lock m_callbackLock;
++    Callback m_callback WTF_GUARDED_BY_LOCK(m_callbackLock);
++
++    Atomic<uint64_t> m_framesOut;
++    Atomic<uint64_t> m_framesDropped;
++
++    // A frame is transformed where it is: the streaming thread hands it to script and waits
++    // for it to come back, then sends on what script left behind. That keeps the frames in
++    // order and keeps the pipeline's own backpressure - pushing frames back in from the
++    // thread script runs on would instead wedge that thread (and with it the other
++    // direction's frames) for as long as the pipeline is not draining.
++    mutable Lock m_slotLock;
++    Condition m_slotCondition;
++    uint64_t m_nextToken { 1 };
++    uint64_t m_awaitedToken WTF_GUARDED_BY_LOCK(m_slotLock) { 0 };
++    bool m_slotFilled WTF_GUARDED_BY_LOCK(m_slotLock) { false };
++    GRefPtr<GstBuffer> m_slotBuffer WTF_GUARDED_BY_LOCK(m_slotLock);
++
++    mutable Lock m_descriptionLock;
++    GStreamerRtpTransformableFrame::StreamDescription m_description WTF_GUARDED_BY_LOCK(m_descriptionLock);
++};
++
+ class GStreamerRtpTransformBackend : public RTCRtpTransformBackend {
+ protected:
+     GStreamerRtpTransformBackend(MediaType, Side);
+     void setInputCallback(Callback&&);
+ 
++    // Claim the tap the pipeline side registered for `owner` (a GstWebRTCRTPSender for a
++    // sender, a GstWebRTCRTPTransceiver for a receiver), creating it if the pipeline has not
++    // got there yet.
++    void adoptTapFor(gpointer owner);
++    GStreamerEncodedFrameTap* tap() const { return m_tap.get(); }
++
+ protected:
+     MediaType mediaType() const final { return m_mediaType; }
+ 
+@@ -43,10 +191,7 @@
+     MediaType m_mediaType;
+     Side m_side;
+ 
+-    Lock m_inputCallbackLock;
+-    Callback m_inputCallback;
+-
+-    Lock m_outputCallbackLock;
++    RefPtr<GStreamerEncodedFrameTap> m_tap;
+ };
+ 
+ inline GStreamerRtpTransformBackend::GStreamerRtpTransformBackend(MediaType mediaType, Side side)
+--- a/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.cpp
++++ b/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.cpp
+@@ -163,13 +163,30 @@
+     GstElement* audioResample = makeGStreamerElement("audioresample"_s);
+     auto clockSync = gst_element_factory_make("clocksync", nullptr);
+ 
++    // What is about to be played is also what a microphone in the same room will pick up, so
++    // let the echo canceller on the capture side hear it (GStreamerAudioCapturer). Without
++    // this reference there is no echo cancellation at all on this port, and a call on
++    // speakers sends the other side their own voice back.
++    // The same probe the microphone's audio processor reads from. There is one for the
++    // process, so a page with a second audio output leaves it to the first: an element can
++    // only be in one pipeline, and echo cancellation only needs one reference signal.
++    GstElement* echoProbe = gstWebRTCEchoProbe();
++    if (echoProbe && GST_OBJECT_PARENT(echoProbe))
++        echoProbe = nullptr;
++
+     gst_bin_add_many(GST_BIN_CAST(m_pipeline.get()), m_src.get(), audioConvert, audioResample, clockSync, audioSink.get(), nullptr);
++    if (echoProbe)
++        gst_bin_add(GST_BIN_CAST(m_pipeline.get()), echoProbe);
+ 
+     // Link src pads from webkitAudioSrc to clocksync ! audioConvert ! audioResample ! audiosink.
+     gst_element_link_pads_full(m_src.get(), "src", clockSync, "sink", GST_PAD_LINK_CHECK_NOTHING);
+     gst_element_link_pads_full(clockSync, "src", audioConvert, "sink", GST_PAD_LINK_CHECK_NOTHING);
+     gst_element_link_pads_full(audioConvert, "src", audioResample, "sink", GST_PAD_LINK_CHECK_NOTHING);
+-    gst_element_link_pads_full(audioResample, "src", audioSink.get(), "sink", GST_PAD_LINK_CHECK_NOTHING);
++    if (echoProbe) {
++        gst_element_link_pads_full(audioResample, "src", echoProbe, "sink", GST_PAD_LINK_CHECK_NOTHING);
++        gst_element_link_pads_full(echoProbe, "src", audioSink.get(), "sink", GST_PAD_LINK_CHECK_NOTHING);
++    } else
++        gst_element_link_pads_full(audioResample, "src", audioSink.get(), "sink", GST_PAD_LINK_CHECK_NOTHING);
+ }
+ 
+ AudioDestinationGStreamer::~AudioDestinationGStreamer()
+@@ -180,6 +197,11 @@
+     unregisterPipeline(m_pipeline);
+     disconnectSimpleBusMessageCallback(m_pipeline.get());
+     gst_element_set_state(m_pipeline.get(), GST_STATE_NULL);
++    // Hand the shared echo probe back before this pipeline takes its children down with it.
++    if (auto* echoProbe = gstWebRTCEchoProbe(); echoProbe && GST_OBJECT_PARENT(echoProbe) == GST_OBJECT_CAST(m_pipeline.get())) {
++        gst_element_set_state(echoProbe, GST_STATE_NULL);
++        gst_bin_remove(GST_BIN_CAST(m_pipeline.get()), echoProbe);
++    }
+     notifyStopResult(true);
+ }
+ 
+--- a/Source/WebCore/platform/graphics/gstreamer/GStreamerCommon.cpp
++++ b/Source/WebCore/platform/graphics/gstreamer/GStreamerCommon.cpp
+@@ -2124,6 +2124,46 @@
+ 
+ #undef GST_CAT_DEFAULT
+ 
++
++GstElement* gstWebRTCEchoProbe()
++{
++    static Lock lock;
++    static NeverDestroyed<GRefPtr<GstElement>> probe;
++    Locker locker { lock };
++    if (!probe.get()) {
++        probe.get() = makeGStreamerElement("webrtcechoprobe"_s);
++        // Held for the lifetime of the process: the registry entry goes away with the
++        // element, and the microphone may outlive any particular output pipeline.
++        if (probe.get())
++            gst_object_ref_sink(GST_OBJECT_CAST(probe.get().get()));
++    }
++    return probe.get().get();
++}
++
++static Lock& echoCancellationLock()
++{
++    static NeverDestroyed<Lock> lock;
++    return lock.get();
++}
++static bool echoCancellationClaimed WTF_GUARDED_BY_LOCK(echoCancellationLock()) { false };
++
++bool gstClaimWebRTCEchoCancellation()
++{
++    if (!gstWebRTCEchoProbe())
++        return false;
++    Locker locker { echoCancellationLock() };
++    if (echoCancellationClaimed)
++        return false;
++    echoCancellationClaimed = true;
++    return true;
++}
++
++void gstReleaseWebRTCEchoCancellation()
++{
++    Locker locker { echoCancellationLock() };
++    echoCancellationClaimed = false;
++}
++
+ } // namespace WebCore
+ 
+ #undef IS_GST_FULL_1_18
+--- a/Source/WebCore/platform/graphics/gstreamer/GStreamerCommon.h
++++ b/Source/WebCore/platform/graphics/gstreamer/GStreamerCommon.h
+@@ -189,6 +189,16 @@
+ 
+ using GstMappedBuffer = GstBufferMapper<GstMapInfo, gst_buffer_map, gst_buffer_unmap>;
+ 
++// The microphone's audio processor (webrtcdsp) cancels what the speakers are playing by
++// reading it from a probe element (webrtcechoprobe) placed in the output path. The two find
++// each other by element name through a process-wide registry, and a probe is registered the
++// moment it is created but can only be claimed by one processor - so the probe has to exist
++// before the first microphone starts, whether or not anything is playing yet, and the second
++// microphone of a page has to do without echo cancellation.
++GstElement* gstWebRTCEchoProbe();
++bool gstClaimWebRTCEchoCancellation();
++void gstReleaseWebRTCEchoCancellation();
++
+ // This class maps only buffers in GST_MAP_READ mode to be able to
+ // bump the reference count and keep it alive during the life of this
+ // object.
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioCapturer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioCapturer.cpp
+@@ -41,6 +41,12 @@
+     });
+ }
+ 
++GStreamerAudioCapturer::~GStreamerAudioCapturer()
++{
++    if (m_hasEchoCancellation)
++        gstReleaseWebRTCEchoCancellation();
++}
++
+ GStreamerAudioCapturer::GStreamerAudioCapturer(GStreamerCaptureDevice&& device)
+     : GStreamerCapturer(WTFMove(device), adoptGRef(gst_caps_new_empty_simple("audio/x-raw")))
+ {
+@@ -76,7 +82,25 @@
+     gst_element_link(audioconvert, audioresample);
+ 
+ #if USE(GSTREAMER_WEBRTC)
+-    if (auto audioFilter = makeGStreamerElement("audiornnoise"_s)) {
++    // webrtcdsp is the same processing a browser applies to a captured microphone: it cancels
++    // what the speakers are playing (reading it from the probe in the output path), levels
++    // the voice and suppresses steady noise. Without it a call on this port has no echo
++    // cancellation and no gain control at all. audiornnoise, which only denoises, is the
++    // fallback when the dsp element is not installed.
++    //
++    // Echo cancellation is claimed rather than assumed: the processor refuses to start -
++    // taking the whole microphone down with it - if the probe it names does not exist or
++    // already belongs to another processor, so a second capture in the same page keeps the
++    // rest of the processing and leaves the echo cancelling to the first.
++    GstElement* audioFilter = makeGStreamerElement("webrtcdsp"_s);
++    if (audioFilter) {
++        m_hasEchoCancellation = gstClaimWebRTCEchoCancellation();
++        g_object_set(audioFilter, "echo-cancel", m_hasEchoCancellation ? TRUE : FALSE,
++            "noise-suppression", TRUE, "gain-control", TRUE, nullptr);
++    } else
++        audioFilter = makeGStreamerElement("audiornnoise"_s);
++
++    if (audioFilter) {
+         auto audioconvert2 = makeGStreamerElement("audioconvert"_s);
+         auto audioresample2 = makeGStreamerElement("audioresample"_s);
+         gst_bin_add_many(GST_BIN_CAST(bin), audioconvert2, audioresample2, audioFilter, nullptr);
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioCapturer.h
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioCapturer.h
+@@ -36,7 +36,7 @@
+ public:
+     GStreamerAudioCapturer(GStreamerCaptureDevice&&);
+     GStreamerAudioCapturer(const PipeWireCaptureDevice&);
+-    ~GStreamerAudioCapturer() = default;
++    ~GStreamerAudioCapturer();
+ 
+     GstElement* createConverter() final;
+     const char* name() final { return "Audio"; }
+@@ -48,6 +48,8 @@
+ 
+ private:
+     std::pair<unsigned long, SinkAudioDataCallback> m_sinkAudioDataCallback;
++    // Whether this capture is the one cancelling echo (see createConverter).
++    bool m_hasEchoCancellation { false };
+ };
+ 
+ } // namespace WebCore
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioRTPPacketizer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerAudioRTPPacketizer.cpp
+@@ -62,7 +62,15 @@
+     auto inputCaps = adoptGRef(gst_caps_new_any());
+     GUniquePtr<GstStructure> structure(gst_structure_copy(codecParameters));
+ 
+-    auto ssrc = ssrcGenerator->generateSSRC();
++    // The source may already have announced an ssrc for this track in the SDP; packets have
++    // to carry that one, not a fresh one.
++    auto ssrc = std::numeric_limits<uint32_t>::max();
++    if (encodingParameters) {
++        if (auto reserved = gstStructureGet<unsigned>(encodingParameters.get(), "ssrc"_s))
++            ssrc = *reserved;
++    }
++    if (ssrc == std::numeric_limits<uint32_t>::max())
++        ssrc = ssrcGenerator->generateSSRC();
+     if (ssrc != std::numeric_limits<uint32_t>::max())
+         gst_structure_set(structure.get(), "ssrc", G_TYPE_UINT, ssrc, nullptr);
+ 
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerIncomingTrackProcessor.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerIncomingTrackProcessor.cpp
+@@ -24,6 +24,7 @@
+ #include "GStreamerCommon.h"
+ #include "GStreamerQuirks.h"
+ #include "GStreamerRegistryScanner.h"
++#include "GStreamerRtpTransformBackend.h"
+ #include "VideoFrameMetadataGStreamer.h"
+ #include <wtf/TZoneMallocInlines.h>
+ 
+@@ -219,6 +220,7 @@
+         auto self = reinterpret_cast<GStreamerIncomingTrackProcessor*>(userData);
+         auto pad = adoptGRef(gst_element_get_static_pad(element, "sink"));
+         self->installRtpBufferPadProbe(pad);
++        self->installEncodedFrameTap(element);
+     }), this);
+ 
+     g_signal_connect(decodebin.get(), "element-added", G_CALLBACK(+[](GstBin*, GstElement* element, gpointer userData) {
+@@ -268,6 +270,7 @@
+         auto self = reinterpret_cast<GStreamerIncomingTrackProcessor*>(userData);
+         auto pad = adoptGRef(gst_element_get_static_pad(element, "sink"));
+         self->installRtpBufferPadProbe(pad);
++        self->installEncodedFrameTap(element);
+     }), this);
+ 
+     auto& quirksManager = GStreamerQuirksManager::singleton();
+@@ -295,6 +298,42 @@
+     return parsebin;
+ }
+ 
++// Script can ask to see every encoded frame on its way in (that is what an encoded
++// transform is), and the depayloader's output is where a buffer is one whole frame again
++// with the RTP header gone. Hand that pad to the tap the receiver's transform backend looks
++// for, named by the transceiver both sides know; it does nothing until a transform exists.
++GStreamerIncomingTrackProcessor::~GStreamerIncomingTrackProcessor()
++{
++    if (m_data.transceiver)
++        GStreamerEncodedFrameTap::forget(m_data.transceiver.get());
++}
++
++void GStreamerIncomingTrackProcessor::installEncodedFrameTap(GstElement* depayloader)
++{
++    if (!m_data.transceiver)
++        return;
++
++    auto isVideo = m_data.type == RealtimeMediaSource::Type::Video;
++    auto mediaType = isVideo ? RTCRtpTransformBackend::MediaType::Video : RTCRtpTransformBackend::MediaType::Audio;
++    auto tap = GStreamerEncodedFrameTap::tapFor(m_data.transceiver.get(), mediaType, RTCRtpTransformBackend::Side::Receiver);
++
++    GStreamerRtpTransformableFrame::StreamDescription description;
++    description.ssrc = m_data.ssrc;
++    if (auto* structure = m_data.caps ? gst_caps_get_structure(m_data.caps.get(), 0) : nullptr) {
++        if (auto payloadType = gstStructureGet<int>(structure, "payload"_s))
++            description.payloadType = static_cast<uint8_t>(*payloadType);
++        if (auto clockRate = gstStructureGet<int>(structure, "clock-rate"_s))
++            description.clockRate = *clockRate;
++    }
++    if (!description.clockRate)
++        description.clockRate = isVideo ? 90000 : 48000;
++    tap->setStreamDescription(description);
++
++    auto srcPad = adoptGRef(gst_element_get_static_pad(depayloader, "src"));
++    if (srcPad)
++        tap->attach(srcPad);
++}
++
+ void GStreamerIncomingTrackProcessor::installRtpBufferPadProbe(const GRefPtr<GstPad>& pad)
+ {
+     if (m_data.type == RealtimeMediaSource::Type::Audio)
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerIncomingTrackProcessor.h
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerIncomingTrackProcessor.h
+@@ -36,7 +36,7 @@
+     {
+         return adoptRef(*new GStreamerIncomingTrackProcessor());
+     }
+-    ~GStreamerIncomingTrackProcessor() = default;
++    ~GStreamerIncomingTrackProcessor();
+ 
+     void configure(ThreadSafeWeakPtr<GStreamerMediaEndpoint>&&, GRefPtr<GstPad>&&);
+     const GRefPtr<GstPad>& pad() const { return m_pad; }
+@@ -59,6 +59,7 @@
+     GRefPtr<GstElement> createParser();
+ 
+     void installRtpBufferPadProbe(const GRefPtr<GstPad>&);
++    void installEncodedFrameTap(GstElement* depayloader);
+ 
+     void trackReady();
+ 
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerMediaStreamSource.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerMediaStreamSource.cpp
+@@ -460,6 +460,7 @@
+             drop = doCapsHaveType(caps, "video"_s) || GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+         }
+ 
++
+         if (drop) {
+             m_needsDiscont = true;
+             GST_TRACE_OBJECT(m_src.get(), "%s queue full already... not pushing", m_isVideoTrack ? "Video" : "Audio");
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerRTPPacketizer.h
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerRTPPacketizer.h
+@@ -37,6 +37,7 @@
+ 
+     GstElement* bin() const { return m_bin.get(); }
+     GstElement* payloader() const { return m_payloader.get(); }
++    GstElement* encoder() const { return m_encoder.get(); }
+ 
+     WARN_UNUSED_RETURN GUniquePtr<GstStructure> rtpParameters() const;
+ 
+--- a/Source/WebCore/platform/mediastream/gstreamer/GStreamerVideoRTPPacketizer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/GStreamerVideoRTPPacketizer.cpp
+@@ -139,7 +139,15 @@
+         return nullptr;
+     }
+ 
+-    auto ssrc = ssrcGenerator->generateSSRC();
++    // The source may already have announced an ssrc for this track in the SDP; packets have
++    // to carry that one, not a fresh one.
++    auto ssrc = std::numeric_limits<uint32_t>::max();
++    if (encodingParameters) {
++        if (auto reserved = gstStructureGet<unsigned>(encodingParameters.get(), "ssrc"_s))
++            ssrc = *reserved;
++    }
++    if (ssrc == std::numeric_limits<uint32_t>::max())
++        ssrc = ssrcGenerator->generateSSRC();
+     if (ssrc != std::numeric_limits<uint32_t>::max())
+         gst_structure_set(codecParameters.get(), "ssrc", G_TYPE_UINT, ssrc, nullptr);
+ 
+--- a/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.cpp
+@@ -24,6 +24,8 @@
+ 
+ #include "GStreamerCommon.h"
+ #include "GStreamerMediaStreamSource.h"
++#include "GStreamerRTPPacketizer.h"
++#include "GStreamerRtpTransformBackend.h"
+ #include "MediaStreamTrack.h"
+ 
+ #define GST_USE_UNSTABLE_API
+@@ -97,6 +99,16 @@
+     gst_element_add_pad(m_bin.get(), gst_ghost_pad_new("src", srcPad.get()));
+ }
+ 
++uint32_t RealtimeOutgoingMediaSourceGStreamer::ssrc()
++{
++    if (!m_ssrc && m_ssrcGenerator) {
++        auto candidate = m_ssrcGenerator->generateSSRC();
++        if (candidate != std::numeric_limits<uint32_t>::max())
++            m_ssrc = candidate;
++    }
++    return m_ssrc;
++}
++
+ const GRefPtr<GstCaps>& RealtimeOutgoingMediaSourceGStreamer::allowedCaps() const
+ {
+     if (m_allowedCaps)
+@@ -138,6 +150,7 @@
+         }
+     }
+ 
++    gst_element_set_locked_state(m_bin.get(), FALSE);
+     gst_element_sync_state_with_parent(m_bin.get());
+ 
+     startUpdatingStats();
+@@ -262,7 +275,13 @@
+     GST_DEBUG_OBJECT(m_bin.get(), "Linking webrtcbin pad %" GST_PTR_FORMAT, m_webrtcSinkPad.get());
+ 
+     auto srcPad = adoptGRef(gst_element_get_static_pad(m_bin.get(), "src"));
+-    gst_pad_link(srcPad.get(), m_webrtcSinkPad.get());
++
++    auto result = gst_pad_link(srcPad.get(), m_webrtcSinkPad.get());
++    if (result != GST_PAD_LINK_OK) {
++        GST_ERROR_OBJECT(m_bin.get(), "Linking %" GST_PTR_FORMAT " to %" GST_PTR_FORMAT " failed: %s. Our caps: %" GST_PTR_FORMAT ", theirs: %" GST_PTR_FORMAT,
++            srcPad.get(), m_webrtcSinkPad.get(), gst_pad_link_get_name(result),
++            gst_pad_query_caps(srcPad.get(), nullptr), gst_pad_query_caps(m_webrtcSinkPad.get(), nullptr));
++    }
+ }
+ 
+ void RealtimeOutgoingMediaSourceGStreamer::setSinkPad(GRefPtr<GstPad>&& pad)
+@@ -329,13 +348,29 @@
+ 
+ void RealtimeOutgoingMediaSourceGStreamer::codecPreferencesChanged()
+ {
+-    if (GST_STATE(m_bin.get()) > GST_STATE_READY) {
+-        GST_WARNING_OBJECT(m_bin.get(), "Changing codec preferences on an ongoing connection is not supported");
+-        return;
+-    }
+ 
+     GRefPtr<GstCaps> codecPreferences;
+     g_object_get(m_transceiver.get(), "codec-preferences", &codecPreferences.outPtr(), nullptr);
++
++    bool isRunning = GST_STATE(m_bin.get()) > GST_STATE_READY;
++    if (isRunning) {
++        // Changing codecs mid-call is not something this source can do - except for the one
++        // case it must: the answer to our offer is free to renumber the payload type, and an
++        // SFU does. Packetizing with the number we proposed produces RTP the far end does
++        // not recognise, so the call carries no audio at all. Rebuilding for the number that
++        // was agreed costs a few milliseconds of audio, right at the start of the call.
++        auto payloadType = codecPreferences ? gstStructureGet<int>(gst_caps_get_structure(codecPreferences.get(), 0), "payload"_s) : std::nullopt;
++        auto currentPayloadType = m_packetizers.isEmpty() ? std::nullopt : m_packetizers.first()->payloadType();
++        if (!payloadType || !currentPayloadType || *payloadType == *currentPayloadType) {
++            GST_WARNING_OBJECT(m_bin.get(), "Changing codec preferences on an ongoing connection is not supported");
++            return;
++        }
++
++        GST_DEBUG_OBJECT(m_bin.get(), "Payload type was renumbered from %d to %d, rebuilding", *currentPayloadType, *payloadType);
++        gst_element_set_locked_state(m_bin.get(), TRUE);
++        gst_element_set_state(m_bin.get(), GST_STATE_READY);
++        m_isStopped = true;
++    }
+     GST_DEBUG_OBJECT(m_bin.get(), "Codec preferences changed on transceiver %" GST_PTR_FORMAT " to: %" GST_PTR_FORMAT, m_transceiver.get(), codecPreferences.get());
+ 
+     HashMap<int, unsigned> payloaderStates;
+@@ -375,8 +410,19 @@
+     }
+ 
+     gst_bin_sync_children_states(GST_BIN_CAST(m_bin.get()));
+-    gst_element_sync_state_with_parent(m_bin.get());
+     GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN_CAST(m_bin.get()), GST_DEBUG_GRAPH_SHOW_ALL, "outgoing-media-new-codec-prefs");
++
++    // Nothing may start flowing before this source is linked to webrtcbin. A push into a pad
++    // that is not linked yet is a flow error, and that stops the source's streaming thread
++    // for good: the track then sends nothing for the rest of the call. start() brings the
++    // bin up to the pipeline's state once the link is in place.
++    if (!m_webrtcSinkPad || !gst_pad_is_linked(m_webrtcSinkPad.get())) {
++        GST_DEBUG_OBJECT(m_bin.get(), "Not started yet: waiting to be linked to webrtcbin");
++        return;
++    }
++
++    gst_element_set_locked_state(m_bin.get(), FALSE);
++    gst_element_sync_state_with_parent(m_bin.get());
+     m_isStopped = false;
+ }
+ 
+@@ -463,9 +509,52 @@
+         return false;
+     }
+     m_packetizers.append(WTFMove(packetizer));
++    updateEncodedFrameTap();
+     return true;
+ }
+ 
++// Script can ask to see every encoded frame on its way out (that is what an encoded
++// transform is), and the encoder's output is where a buffer is one whole frame with no RTP
++// header around it yet. Hand that pad to the tap the sender's transform backend looks for;
++// it does nothing until a transform exists.
++//
++// The tap is named after this source rather than after the sender: the sender object a
++// GStreamerRtpSenderBackend holds is the one its transceiver had when the track was added,
++// and webrtcbin makes a new one when it renegotiates, so the two sides would be looking at
++// different taps. This source is what they have in common.
++void RealtimeOutgoingMediaSourceGStreamer::updateEncodedFrameTap()
++{
++    if (m_packetizers.isEmpty())
++        return;
++
++    const auto& packetizer = m_packetizers.last();
++    GST_DEBUG_OBJECT(m_bin.get(), "Encoded frame tap: %zu packetizer(s), tapping the last one (%" GST_PTR_FORMAT ")", m_packetizers.size(), packetizer->bin());
++    auto mediaType = m_type == Type::Video ? RTCRtpTransformBackend::MediaType::Video : RTCRtpTransformBackend::MediaType::Audio;
++    auto tap = GStreamerEncodedFrameTap::tapFor(this, mediaType, RTCRtpTransformBackend::Side::Sender);
++
++    GStreamerRtpTransformableFrame::StreamDescription description;
++    description.ssrc = ssrc();
++    if (auto payloadType = packetizer->payloadType())
++        description.payloadType = static_cast<uint8_t>(*payloadType);
++    description.clockRate = m_type == Type::Video ? 90000 : 48000;
++    tap->setStreamDescription(description);
++
++    auto encoderSrcPad = adoptGRef(gst_element_get_static_pad(packetizer->encoder(), "src"));
++    if (encoderSrcPad) {
++        auto peer = adoptGRef(gst_pad_get_peer(encoderSrcPad.get()));
++        GST_DEBUG_OBJECT(m_bin.get(), "Encoded frame tap on %" GST_PTR_FORMAT ", peer %" GST_PTR_FORMAT ", packetizer bin parent %" GST_PTR_FORMAT, encoderSrcPad.get(), peer.get(), GST_ELEMENT_PARENT(packetizer->bin()));
++        tap->attach(encoderSrcPad);
++    }
++}
++
++GUniquePtr<GstStructure> RealtimeOutgoingMediaSourceGStreamer::reservedSSRCParameters()
++{
++    GUniquePtr<GstStructure> parameters;
++    if (auto reservedSSRC = ssrc())
++        parameters.reset(gst_structure_new("encoding-parameters", "ssrc", G_TYPE_UINT, reservedSSRC, nullptr));
++    return parameters;
++}
++
+ bool RealtimeOutgoingMediaSourceGStreamer::configurePacketizers(GRefPtr<GstCaps>&& codecPreferences)
+ {
+     GST_DEBUG_OBJECT(m_bin.get(), "Configuring packetizers for caps %" GST_PTR_FORMAT, codecPreferences.get());
+@@ -486,7 +575,7 @@
+         if (m_parameters) {
+             auto encodings = gstStructureGetList<const GstStructure*>(m_parameters.get(), "encodings"_s);
+             if (encodings.isEmpty()) [[unlikely]] {
+-                auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, nullptr);
++                auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, reservedSSRCParameters());
+                 if (!packetizer)
+                     continue;
+ 
+@@ -499,6 +588,14 @@
+             bool codecIsValid = false;
+             for (const auto& encoding : encodings) {
+                 GUniquePtr<GstStructure> encodingParameters(gst_structure_copy(encoding));
++                // Carry the ssrc this source announced in the SDP. The far end identifies an
++                // arriving stream by its ssrc, so a packetizer left to invent one of its own
++                // sends audio the other side cannot place: it arrives and is thrown away,
++                // and the call is silent with nothing to show for it.
++                if (!gst_structure_has_field(encodingParameters.get(), "ssrc")) {
++                    if (auto reservedSSRC = ssrc())
++                        gst_structure_set(encodingParameters.get(), "ssrc", G_TYPE_UINT, reservedSSRC, nullptr);
++                }
+                 auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, WTFMove(encodingParameters));
+                 if (!packetizer)
+                     continue;
+@@ -520,7 +617,11 @@
+                 break;
+ 
+         } else {
+-            auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, nullptr);
++            GUniquePtr<GstStructure> encodingParameters;
++            if (auto reservedSSRC = ssrc()) {
++                encodingParameters.reset(gst_structure_new("encoding-parameters", "ssrc", G_TYPE_UINT, reservedSSRC, nullptr));
++            }
++            auto packetizer = createPacketizer(m_ssrcGenerator, codecParameters, WTFMove(encodingParameters));
+             if (!packetizer)
+                 continue;
+ 
+@@ -658,6 +759,8 @@
+ 
+ void RealtimeOutgoingMediaSourceGStreamer::teardown()
+ {
++    GStreamerEncodedFrameTap::forget(this);
++
+     GST_DEBUG_OBJECT(m_bin.get(), "Tearing down");
+     if (m_transceiver)
+         g_signal_handlers_disconnect_by_data(m_transceiver.get(), this);
+--- a/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.h
++++ b/Source/WebCore/platform/mediastream/gstreamer/RealtimeOutgoingMediaSourceGStreamer.h
+@@ -45,6 +45,14 @@
+ 
+     void setMediaStreamID(const String& mediaStreamId) { m_mediaStreamId = mediaStreamId; }
+     const String& mediaStreamID() const { return m_mediaStreamId; }
++    const String& trackId() const { return m_trackId; }
++    uint32_t announcedSSRC() { return ssrc(); }
++
++    // The m-line that carried this source in our offer. The answer that follows need not
++    // name the stream and track again, so this is how the source finds its own section in
++    // it - and the answer is what the sender is configured from.
++    void setOfferedMLineIndex(unsigned index) { m_offeredMLineIndex = index; }
++    std::optional<unsigned> offeredMLineIndex() const { return m_offeredMLineIndex; }
+     const GRefPtr<GstCaps>& allowedCaps() const;
+     WARN_UNUSED_RETURN GRefPtr<GstCaps> rtpCaps() const;
+ 
+@@ -90,6 +98,8 @@
+     bool isStopped() const { return m_isStopped; }
+ 
+     bool linkPacketizer(RefPtr<GStreamerRTPPacketizer>&&);
++    void updateEncodedFrameTap();
++    WARN_UNUSED_RETURN GUniquePtr<GstStructure> reservedSSRCParameters();
+ 
+     Type m_type;
+     String m_mediaStreamId;
+@@ -111,6 +121,8 @@
+     GRefPtr<GstWebRTCRTPSender> m_sender;
+     GRefPtr<GstPad> m_webrtcSinkPad;
+     RefPtr<UniqueSSRCGenerator> m_ssrcGenerator;
++    uint32_t m_ssrc { 0 };
++    std::optional<unsigned> m_offeredMLineIndex;
+     GUniquePtr<GstStructure> m_parameters;
+ 
+     Vector<RefPtr<GStreamerRTPPacketizer>> m_packetizers;
+@@ -134,6 +146,13 @@
+ 
+     void checkMid();
+ 
++    // The synchronisation source this track sends under. Chosen before the first offer is
++    // created, so the offer can name it: webrtcbin leaves `a=ssrc` out of a media section
++    // whose caps carry no ssrc, and an SFU that identifies an arriving stream by its ssrc
++    // then has nothing to match the publication to. The packetizer is given the same value
++    // so the packets agree with what was announced.
++    uint32_t ssrc();
++
+     struct ExtensionLookupResults {
+         bool hasRtpStreamIdExtension { false };
+         bool hasRtpRepairedStreamIdExtension { false };
+--- a/Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml
++++ b/Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml
+@@ -2767,9 +2767,9 @@
+   defaultValue:
+     WebKit:
+       "PLATFORM(COCOA)": true
+-      default: false
++      default: true
+     WebCore:
+-      default: false
++      default: true
+ 
+ ExposeSpeakersWithoutMicrophoneEnabled:
+   type: bool
+@@ -2781,9 +2781,9 @@
+   defaultValue:
+     WebKit:
+       "PLATFORM(COCOA)": true
+-      default: false
++      default: true
+     WebCore:
+-      default: false
++      default: true
+ 
+ # FIXME: Is this implemented for WebKitLegacy? If not, this should be excluded from WebKitLegacy entirely.
+ ExtendedAudioDescriptionsEnabled:

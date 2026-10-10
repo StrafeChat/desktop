@@ -11,13 +11,34 @@
 #      Ubuntu 22.04 (the release runner) has 1.20.
 #   3. libnice without gupnp. Ubuntu's links libsoup2, and a process that already has
 #      libsoup3 - which WebKit does - aborts the moment both are loaded.
+#   4. The plugins the engine reaches for to see a camera (v4l2) and to clean up a
+#      microphone (webrtcdsp, which needs webrtc-audio-processing 2 - Ubuntu has 0.3.1).
+#      Without the first no camera exists; without the second there is no echo
+#      cancellation, no noise suppression and no gain control anywhere in the call.
 #
-# Two small patches ride along (see ../patches): WebKit names the synchronisation source of
-# each track it sends, which is how the SFU ties arriving media to a published track; and
-# webrtcbin's hard assertion about a transceiver changing media line becomes a warning,
-# because an SFU that reorders its offer when someone joins otherwise kills the web process.
+# Patches ride along (see ../patches). In WebKit:
 #
-#   scripts/build-webkitgtk-webrtc.sh [webkit version]     # ~2-3 h on 16 cores
+#   * Encoded transforms are implemented. The GStreamer port ships them as empty stubs, so
+#     `sender.transform` silently does nothing - which means LiveKit's end-to-end encryption
+#     does nothing either, and desktop and browser each throw the other's audio away.
+#   * A sender uses the ssrc it announced in the SDP. Left to itself the packetizer invents
+#     one, and the SFU drops every packet because it cannot place the stream.
+#   * A codec keeps one payload type across the session, the way browsers number them, so an
+#     answer has no reason to renumber ours - and what an answer does agree to is adopted.
+#   * A published source is matched to the m-line that names it, and sent through that
+#     m-line's own transceiver, instead of a fresh one webrtcbin never negotiates.
+#   * A source stays out of the pipeline's state changes until it is linked, so it cannot
+#     push into an unlinked pad and lose its streaming thread to the flow error.
+#   * The speakers stop being hidden (they sit behind a preference only Apple ports turn on),
+#     the echo probe goes after the audio output and the audio processor in front of the
+#     microphone - with echo cancellation claimed, since the processor refuses to start, and
+#     takes the microphone down with it, when the probe it names is missing or already taken.
+#
+# In gst-plugins-bad: webrtcbin's hard assertion about a transceiver changing media line
+# becomes a warning, because an SFU that reorders its offer when someone joins otherwise
+# kills the web process.
+#
+#   scripts/build-webrtc-stack.sh [webkit version]     # ~2-3 h on 16 cores
 #
 # Output: dist/webrtc-stack-<version>-ubuntu22.04-x86_64.tar.xz, uploaded as an asset of the
 # pre-release `webrtc-stack-<version>` (a pre-release, so neither the updater's
@@ -27,6 +48,7 @@ set -euo pipefail
 WEBKIT_VERSION="${1:-2.50.4}"
 GST_VERSION="${GST_VERSION:-1.26.0}"
 NICE_VERSION="${NICE_VERSION:-0.1.22}"
+WAP_VERSION="${WAP_VERSION:-2.1}"
 JOBS="${JOBS:-8}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK:-$HERE/.webrtc-stack-build}"
@@ -37,6 +59,7 @@ mkdir -p "$WORK" "$HERE/dist"
 fetch() { [ -f "$WORK/$2" ] || curl -fL -o "$WORK/$2" "$1"; }
 fetch "https://webkitgtk.org/releases/webkitgtk-$WEBKIT_VERSION.tar.xz" "webkitgtk-$WEBKIT_VERSION.tar.xz"
 fetch "https://libnice.freedesktop.org/releases/libnice-$NICE_VERSION.tar.gz" "libnice-$NICE_VERSION.tar.gz"
+fetch "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/v$WAP_VERSION/webrtc-audio-processing-v$WAP_VERSION.tar.gz" "webrtc-audio-processing-$WAP_VERSION.tar.gz"
 for m in gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad; do
   fetch "https://gstreamer.freedesktop.org/src/$m/$m-$GST_VERSION.tar.xz" "$m-$GST_VERSION.tar.xz"
 done
@@ -94,12 +117,23 @@ docker exec "$NAME" bash -euo pipefail -c "
   ninja -C build && ninja -C build install
   cd /work
 
+  # The audio processor itself: echo cancellation, noise suppression and gain control, which
+  # is what gst-plugins-bad's webrtcdsp wraps. 2.x is a different library from the 0.3.1 in
+  # Ubuntu, and nothing older has the API the plugin now uses. It vendors abseil (a meson
+  # subproject, so the setup step needs network) and links it statically; installing it here
+  # puts those headers in the prefix where webrtcdsp picks them up through pkg-config.
+  rm -rf webrtc-audio-processing-$WAP_VERSION && tar -xzf webrtc-audio-processing-$WAP_VERSION.tar.gz
+  cd webrtc-audio-processing-$WAP_VERSION
+  meson setup build --prefix=\$P --libdir=lib/x86_64-linux-gnu -Dbuildtype=release
+  ninja -C build && ninja -C build install
+  cd /work
+
   rm -rf gst-plugins-bad-$GST_VERSION && tar -xJf gst-plugins-bad-$GST_VERSION.tar.xz
   patch -p1 -d gst-plugins-bad-$GST_VERSION < /work/patches/gst-plugins-bad-webrtcbin-mline.patch
   cd gst-plugins-bad-$GST_VERSION
   meson setup build --prefix=\$P --libdir=lib/x86_64-linux-gnu -Dbuildtype=release \
     -Dtests=disabled -Dexamples=disabled -Ddoc=disabled -Dintrospection=disabled -Dauto_features=disabled \
-    -Dwebrtc=enabled -Ddtls=enabled -Dsrtp=enabled -Dsctp=enabled
+    -Dwebrtc=enabled -Ddtls=enabled -Dsrtp=enabled -Dsctp=enabled -Dwebrtcdsp=enabled
   ninja -C build && ninja -C build install
   cd /work
 
@@ -109,7 +143,9 @@ docker exec "$NAME" bash -euo pipefail -c "
     -Dequalizer=enabled -Ddeinterlace=enabled \
     -Disomp4=enabled -Dmatroska=enabled -Dflac=enabled -Dwavparse=enabled -Dwavenc=enabled \
     -Dlaw=enabled -Davi=enabled -Dflv=enabled -Dvideocrop=enabled -Dicydemux=enabled -Dapetag=enabled \
-    -Did3demux=enabled -Dmultifile=enabled
+    -Did3demux=enabled -Dmultifile=enabled \
+    -Dv4l2=enabled -Dv4l2-probe=true -Dv4l2-gudev=enabled -Dvideomixer=enabled -Dimagefreeze=enabled \
+    -Djpeg=enabled -Dpng=enabled
 "
 
 # --- WebKitGTK ----------------------------------------------------------------------------
@@ -118,7 +154,7 @@ docker exec "$NAME" bash -euo pipefail -c "
   export LD_LIBRARY_PATH=/work/stack/usr/lib/x86_64-linux-gnu
   cd /work
   rm -rf webkitgtk-$WEBKIT_VERSION && tar -xJf webkitgtk-$WEBKIT_VERSION.tar.xz
-  patch -p1 -d webkitgtk-$WEBKIT_VERSION < /work/patches/webkitgtk-announce-ssrc.patch
+  patch -p1 -d webkitgtk-$WEBKIT_VERSION < /work/patches/webkitgtk-webrtc.patch
   mkdir -p webkitgtk-$WEBKIT_VERSION/build && cd webkitgtk-$WEBKIT_VERSION/build
   # Ubuntu's own flags (debian/rules), minus docs and introspection, plus WebRTC. Ubuntu
   # blanks CMAKE_*_FLAGS_RELEASE and gets -O2 back from dpkg-buildflags; set it explicitly
@@ -147,10 +183,12 @@ docker exec "$NAME" bash -euo pipefail -c "
   strip --strip-unneeded \$L/libwebkit2gtk-4.1.so.0.*.* \$L/libjavascriptcoregtk-4.1.so.0.*.* \
     \$L/webkit2gtk-4.1/WebKitWebProcess \$L/webkit2gtk-4.1/WebKitNetworkProcess \
     \$L/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so 2>/dev/null || true
-  find \$L -name 'libgst*.so*' -o -name 'libnice.so*' | xargs -r strip --strip-unneeded 2>/dev/null || true
+  find \$L -name 'libgst*.so*' -o -name 'libnice.so*' -o -name 'libwebrtc-audio-processing-*.so*' \
+    | xargs -r strip --strip-unneeded 2>/dev/null || true
   tar -cJf /work/$TARBALL \
     \$L/libwebkit2gtk-4.1.so* \$L/libjavascriptcoregtk-4.1.so* \$L/webkit2gtk-4.1 \
-    \$L/libgst*.so* \$L/libnice.so* \$L/gstreamer-1.0 usr/libexec/gstreamer-1.0
+    \$L/libgst*.so* \$L/libnice.so* \$L/libwebrtc-audio-processing-*.so* \
+    \$L/gstreamer-1.0 usr/libexec/gstreamer-1.0
 "
 cp "$WORK/$TARBALL" "$HERE/dist/$TARBALL"
 sha256sum "$HERE/dist/$TARBALL"
