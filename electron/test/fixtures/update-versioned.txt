@@ -1,0 +1,1 @@
+TEST ONLY - a second small file, signed with --app-version 9.8.7 by the same throwaway key.

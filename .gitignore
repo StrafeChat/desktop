@@ -1,4 +1,6 @@
 node_modules/
 # The web client's build output lives in the submodule; Cargo's in src-tauri/target.
 web/dist/
+# electron-builder's output: the Linux bundles and the unpacked app they are made from.
+electron/dist/
 .DS_Store

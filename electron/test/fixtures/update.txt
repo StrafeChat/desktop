@@ -1,0 +1,2 @@
+TEST ONLY - a small file signed with a throwaway key for the minisign tests.
+Never trusted by any build.

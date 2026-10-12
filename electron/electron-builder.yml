@@ -1,0 +1,143 @@
+# Packaging for the Linux app: the web client on Electron (Chromium), because WebKitGTK cannot
+# carry an end-to-end encrypted call (../docs/linux-voice.md). Windows and macOS are built by
+# Tauri from ../src-tauri and are not affected by anything here.
+#
+# `npm run build` (in this directory) builds the AppImage, deb and rpm into dist/. The version
+# comes from ../package.json - the one the Tauri build reads too - passed in by the build
+# scripts as extraMetadata.version, so this directory's package.json version never ships.
+
+appId: chat.strafe.desktop
+productName: Strafe
+
+extraMetadata:
+  # Electron takes the window's identity from this (the Wayland app_id; on X11 the WM_CLASS
+  # class is the product name, also "Strafe"), and syncDesktopName below names the installed
+  # .desktop file to match, so the desktop files the running window under its launcher.
+  desktopName: Strafe.desktop
+
+directories:
+  output: dist
+  buildResources: build
+
+# Only what the main process runs; the tests stay out of the package.
+files:
+  - main.js
+  - preload.js
+  - src/**/*
+  - package.json
+asar: true
+
+# The app updates itself from the release's latest.json, the same signed feed the Tauri
+# build reads (../scripts/linux-update-feed.mjs adds the Linux entries). electron-builder
+# must neither publish anything nor write update metadata of its own into the package.
+publish: null
+
+extraResources:
+  # The web client, built by `npm --prefix ../web run build`, served from inside the app.
+  - from: ../web/dist
+    to: web
+  # Tray and window icons at runtime (the installers take theirs from linux.icon).
+  - from: build/icons
+    to: icons
+
+# Puts a launcher in front of the executable for AppImages on systems that restrict user
+# namespaces, and flips the Electron fuses - there rather than under `electronFuses` here,
+# because electron-builder flips those after this hook, by the executable's name, which is
+# then the launcher. See build/afterPack.js.
+afterPack: build/afterPack.js
+
+toolsets:
+  # The static AppImage runtime, which needs no libfuse2. The Tauri AppImage it replaces
+  # carries the static runtime too, so its users may well not have libfuse2 installed (most
+  # distributions stopped shipping it by default); the legacy runtime would update them into
+  # an AppImage that cannot mount itself.
+  appimage: "1.0.3"
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+    - target: rpm
+      arch: [x64]
+  # The Tauri build's binary name: the deb and rpm put it on PATH under the same name, so an
+  # upgraded install keeps the command (and anything that launches it) working.
+  executableName: strafe-desktop
+  icon: build/icons
+  category: Network
+  # tauri.conf.json's shortDescription and longDescription. The description is also the
+  # .desktop file's Comment (electron-builder writes it there, over any entry below).
+  synopsis: Strafe desktop
+  description: Chat, voice and video on any Strafe instance, with your accounts from every instance one click apart.
+  maintainer: StrafeChat
+  syncDesktopName: true
+  desktop:
+    entry:
+      Name: Strafe
+      # Must match the running window's class/app_id (see desktopName above). Confirm with
+      # `xprop WM_CLASS` (X11) after a build if anything here changes.
+      StartupWMClass: Strafe
+
+# Artifact names are exactly the Tauri bundler's, which strafe.chat/download, the docs and
+# the update feed script all match on. x64 is the only architecture built, hence the literal
+# arch in each.
+appImage:
+  artifactName: ${productName}_${version}_amd64.${ext}
+
+# The fpm entries `<file>=<path>` add resources/package-type, which tells the app's updater
+# (src/updater.js) which package to download and how to install it. electron-builder writes
+# that file only along with a publish configuration of its own, and there is none (above).
+# Paths are relative to this directory, where the build scripts run electron-builder.
+# Dependencies: what strafe-desktop.bin links (readelf -d ... | grep NEEDED), by package, and
+# no more - electron-builder's defaults list libraries Electron no longer uses (libxss1,
+# libxtst6). It matters for more than tidiness: the Tauri app updates an existing install with
+# a bare `dpkg -i` / `rpm -U`, which installs no dependencies, and a missing one would leave
+# the package unconfigured. All of these are on any desktop that ran the GTK Tauri app. What
+# Electron only loads when present (libnotify for notifications, libsecret for the keyring,
+# the tray's appindicator) is recommended rather than required.
+deb:
+  # Named like the Tauri package, so dpkg upgrades an existing install in place instead of
+  # installing a second, conflicting copy.
+  packageName: strafe
+  depends:
+    - libgtk-3-0
+    - libnss3
+    - libgbm1
+    - libasound2
+    - libatspi2.0-0
+    - libcups2
+    - libdbus-1-3
+    - libxkbcommon0
+    - libudev1
+    - xdg-utils
+  recommends:
+    - libnotify4
+    - libsecret-1-0
+    - libappindicator3-1
+  artifactName: ${productName}_${version}_amd64.${ext}
+  appArmorProfile: build/apparmor-profile.tpl
+  fpm:
+    - build/package-type/deb=/opt/Strafe/resources/package-type
+
+rpm:
+  packageName: strafe
+  # By shared object rather than package name: Fedora and openSUSE name these packages
+  # differently, but both provide the same sonames.
+  depends:
+    - libgtk-3.so.0()(64bit)
+    - libnss3.so()(64bit)
+    - libgbm.so.1()(64bit)
+    - libasound.so.2()(64bit)
+    - libatspi.so.0()(64bit)
+    - libcups.so.2()(64bit)
+    - libdbus-1.so.3()(64bit)
+    - libxkbcommon.so.0()(64bit)
+    - libudev.so.1()(64bit)
+    - xdg-utils
+  artifactName: ${productName}-${version}-1.x86_64.${ext}
+  appArmorProfile: build/apparmor-profile.tpl
+  fpm:
+    - --rpm-posttrans
+    - build/rpm-posttrans.sh
+    - build/package-type/rpm=/opt/Strafe/resources/package-type

@@ -1,15 +1,26 @@
 # Builds and signs the desktop app for every platform and publishes a draft GitHub release
-# with the installers plus latest.json, the manifest the in-app updater reads from
+# with the installers plus latest.json, the manifest the in-app updaters read from
 # https://github.com/StrafeChat/desktop/releases/latest/download/latest.json.
 #
-# Trigger: push a tag `v<version>` where <version> matches package.json. Publish the draft
-# once the installers have been tried; the updater only sees published releases. The web
-# client is the `web/` submodule: bump it to the commit a release should carry first.
+# Two shells from one tag (README: "Two shells"):
+#   build          Windows and macOS (both chips) on Tauri. tauri-action creates the draft
+#                  release, uploads the installers and writes latest.json.
+#   linux          The Linux app on Electron (electron/): AppImage, deb and rpm, signed with the
+#                  same updater key. Built on Ubuntu 22.04, whose glibc sets the oldest
+#                  distribution the app runs on.
+#   linux-release  Once both are done: checks the Linux signatures, attaches the bundles to the
+#                  draft and adds their entries to its latest.json (scripts/linux-update-feed.mjs).
+#
+# Trigger: push a tag `v<version>` where <version> matches package.json (and Cargo.toml).
+# Publish the draft once the installers have been tried; the updaters only see published
+# releases. The web client is the `web/` submodule: bump it to the commit a release should
+# carry first.
 #
 # Secrets: TAURI_SIGNING_PRIVATE_KEY (the contents of the key generated with
 # `npx tauri signer generate`) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty if the key
-# has none). The matching public key is in src-tauri/tauri.conf.json; an installed app
-# only accepts updates signed by it.
+# has none). They sign the Tauri and the Electron bundles alike. The matching public key is in
+# src-tauri/tauri.conf.json; an installed app, on either shell, only accepts updates signed
+# by it.
 name: Release
 
 on:
@@ -29,8 +40,6 @@ jobs:
             args: --target aarch64-apple-darwin
           - platform: macos-latest
             args: --target x86_64-apple-darwin
-          - platform: ubuntu-22.04
-            args: ''
           - platform: windows-latest
             args: ''
     runs-on: ${{ matrix.platform }}
@@ -54,56 +63,6 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          # The last three are what the bundled GStreamer's webrtc plugins link against; the
-          # runner has no gstreamer packages of its own to pull them in, and the AppImage
-          # bundler stops when a dependency is missing.
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libsrtp2-1 libvpx7 libopus0 libgudev-1.0-0 libjpeg-turbo8 libpng16-16 libnss3
-          # libsrtp2 does its crypto through NSS, and NSS loads the ciphers from PKCS#11
-          # modules it dlopens by name - nothing links them, so the AppImage bundler cannot
-          # see them and would leave them out. Without them srtp_init() fails, SRTP never
-          # starts and a call sends no audio at all. tauri.conf.json copies these three into
-          # the bundle; fail here, with a reason, rather than shipping that silence again.
-          for lib in libsoftokn3.so libfreeblpriv3.so libfreebl3.so; do
-            test -f "/usr/lib/x86_64-linux-gnu/nss/$lib" || { echo "NSS module $lib missing - the AppImage's SRTP would not start"; exit 1; }
-          done
-
-      # Calls need a web engine with WebRTC, which no distribution ships, and a GStreamer
-      # new enough to go with it. scripts/build-webrtc-stack.sh builds both (plus a libnice
-      # that does not drag in libsoup2) for this exact runner; the tarball is laid over /usr
-      # here, so the bundler picks it up the way it would the stock libraries.
-      - name: WebRTC web engine
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WEBRTC_STACK_TAG: webrtc-stack-2.50.4
-        run: |
-          set -euo pipefail
-          installed="$(dpkg-query -W -f='${Version}' libwebkit2gtk-4.1-0)"
-          case "$installed" in
-            2.50.4-*) ;;
-            *) echo "runner has libwebkit2gtk-4.1 $installed, the WebRTC stack is 2.50.4 - rebuild it with scripts/build-webrtc-stack.sh"; exit 1 ;;
-          esac
-          gh release download "$WEBRTC_STACK_TAG" --repo "$GITHUB_REPOSITORY" --pattern 'webrtc-stack-*-ubuntu22.04-x86_64.tar.xz' --dir /tmp/webrtc-stack
-          sudo tar -C / -xJf /tmp/webrtc-stack/webrtc-stack-*-ubuntu22.04-x86_64.tar.xz
-          sudo ldconfig
-          # Prove it took: only a WebRTC build links GStreamer's webrtc library.
-          ldd /usr/lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0 | grep -q libgstwebrtc || { echo "WebRTC engine not in place"; exit 1; }
-          test -f /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstwebrtc.so || { echo "GStreamer webrtc plugin missing"; exit 1; }
-          # Whatever the distribution left in the plugin directory belongs to its older
-          # GStreamer and cannot load against this one; bundled, it would only fail to
-          # register and take media playback with it. Keep the plugins the stack ships.
-          tar -tJf /tmp/webrtc-stack/webrtc-stack-*-ubuntu22.04-x86_64.tar.xz \
-            | sed -n 's#^usr/lib/x86_64-linux-gnu/gstreamer-1.0/##p' | grep '\.so$' | sort > /tmp/stack-plugins.txt
-          for plugin in /usr/lib/x86_64-linux-gnu/gstreamer-1.0/*.so; do
-            grep -qx "$(basename "$plugin")" /tmp/stack-plugins.txt || sudo rm -f "$plugin"
-          done
-          echo "plugins kept: $(ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/*.so | wc -l)"
-
       - run: npm ci && npm ci --prefix web
 
       - uses: tauri-apps/tauri-action@v0
@@ -113,12 +72,114 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: npm run tauri
-          # linuxdeploy says nothing useful unless the bundler is verbose, and the Linux
-          # bundle is the one carrying a hand-built web engine.
-          args: ${{ matrix.args }} --verbose
+          args: ${{ matrix.args }}
           tagName: v__VERSION__
           releaseName: 'Strafe Desktop v__VERSION__'
           releaseBody: 'Installers for Windows, macOS and Linux are below. Installed copies update themselves.'
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+  linux:
+    # WebKitGTK cannot carry an end-to-end encrypted call, so Linux gets the same web client on
+    # Chromium instead (docs/linux-voice.md).
+    runs-on: ubuntu-22.04
+    # Builds and signs only; linux-release does the uploading.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            electron/package-lock.json
+
+      # The root install is only for the Tauri CLI, which does the signing below.
+      - run: npm ci && npm ci --prefix web && npm ci --prefix electron
+
+      - name: rpmbuild, for the rpm target
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - run: npm --prefix web run build
+      - run: npm --prefix electron test
+      # publish: null in electron-builder.yml already; said again so a CI run on a tag can
+      # never upload anything on its own.
+      - run: npm --prefix electron run build -- --publish never
+
+      # The same signatures tauri-action makes for the other platforms: minisign, by the
+      # updater key, bound to this version (--app-version, as `tauri build` does).
+      - name: Sign for the updaters
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          for f in "Strafe_${version}_amd64.AppImage" "Strafe_${version}_amd64.deb" "Strafe-${version}-1.x86_64.rpm"; do
+            test -f "electron/dist/$f" || { echo "electron/dist/$f was not built - did the artifact names in electron/electron-builder.yml change?"; exit 1; }
+            # From the repository root, where the Tauri CLI is installed; --no keeps npx from
+            # fetching some other package called "tauri" if it is not.
+            npx --no tauri signer sign --app-version "$version" "electron/dist/$f"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: |
+            electron/dist/*.AppImage
+            electron/dist/*.deb
+            electron/dist/*.rpm
+            electron/dist/*.sig
+          if-no-files-found: error
+          # Already compressed, every one of them.
+          compression-level: 0
+
+  linux-release:
+    needs: [build, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # No submodules: this needs package.json, the feed script, the signature verifier it
+      # shares with the app (electron/src/minisign.js) and the public key in tauri.conf.json.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+          path: linux-bundles
+
+      # tauri-action left a draft release tagged v<version>. gh's release commands find a draft
+      # by the tag it will have once published, so all of this works before anyone publishes it.
+      # The feed is checked and rewritten first, so a bad signature attaches nothing.
+      - name: Add Linux to the draft release and its latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          appimage="linux-bundles/Strafe_${version}_amd64.AppImage"
+          deb="linux-bundles/Strafe_${version}_amd64.deb"
+          rpm="linux-bundles/Strafe-${version}-1.x86_64.rpm"
+
+          mkdir feed
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir feed
+          node scripts/linux-update-feed.mjs --feed feed/latest.json \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" \
+            --appimage "$appimage" --deb "$deb" --rpm "$rpm"
+
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$appimage" "$appimage.sig" "$deb" "$deb.sig" "$rpm" "$rpm.sig"
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber feed/latest.json
