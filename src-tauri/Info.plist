@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the macOS bundle's Info.plist (it picks up an Info.plist beside
+  tauri.conf.json on its own). macOS refuses the microphone and the camera to an app that does
+  not say why it wants them, and WebKit checks for these strings before it even asks: without
+  them every getUserMedia in a call fails, so nobody on the Mac app could speak or show video.
+  The text is what macOS shows in its permission prompt.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Strafe uses your microphone for voice calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Strafe uses your camera for video calls.</string>
+</dict>
+</plist>

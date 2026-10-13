@@ -165,9 +165,15 @@ fn desktop_prefs_save(app: AppHandle, state: tauri::State<'_, PrefsState>, prefs
 }
 
 /// What Discord should show under "Playing Strafe" right now (the frontend knows whether
-/// the person is in a call; this side only knows whether the window is open).
+/// the person is in a call; this side only knows whether the window is open). Only the main
+/// window's say counts, as in the Electron shell: a popup (an OAuth consent page, say) runs
+/// the whole frontend too, with no call of its own, and opening one mid-call would otherwise
+/// wipe "In a voice call" from Discord until the call changed.
 #[tauri::command]
-fn desktop_discord_presence_set(discord: tauri::State<'_, Discord>, presence: Presence) {
+fn desktop_discord_presence_set(window: tauri::WebviewWindow, discord: tauri::State<'_, Discord>, presence: Presence) {
+    if window.label() != MAIN_WINDOW {
+        return;
+    }
     discord.set_presence(presence);
 }
 
@@ -204,11 +210,22 @@ fn desktop_show(app: AppHandle) {
 /// happens from here: leave a marker and relaunch; the next start removes the directory
 /// before the webview opens (see wipe_webview_storage_if_asked). Linux only, where the
 /// engine is bundled and the layout is known; elsewhere the frontend's own deletion works.
+#[cfg(target_os = "linux")]
 #[tauri::command]
 fn desktop_wipe_webview_storage(app: AppHandle) -> Result<(), String> {
     let dir = config_dir(&app)?;
     fs::write(dir.join(WIPE_MARKER), b"tauri_localhost_0\n").map_err(|e| e.to_string())?;
     app.restart()
+}
+
+/// Nothing at start-up would honour the marker on WebView2 or WKWebView, so writing it and
+/// restarting would come straight back to the same unreadable store - and the page, asking
+/// again, would revoke yet another freshly made device each round. Refuse instead, so a call
+/// that should have gone to the page's own deletion fails where it can be seen.
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn desktop_wipe_webview_storage() -> Result<(), String> {
+    Err("the shell cannot wipe the webview's storage on this platform; delete it from the page".into())
 }
 
 /// Honour a wipe marker left by `desktop_wipe_webview_storage`. Runs before the Tauri app is
@@ -238,8 +255,15 @@ fn wipe_webview_storage_if_asked(identifier: &str) {
     }
 }
 
+/// Nothing is wiped here, but 1.4.0 and earlier wrote the marker on these platforms too and then
+/// ignored it. Drop any it left, so it cannot fire long after the fact should this side ever
+/// learn to wipe - taking that account's E2EE keys with it.
 #[cfg(not(target_os = "linux"))]
-fn wipe_webview_storage_if_asked(_identifier: &str) {}
+fn wipe_webview_storage_if_asked(identifier: &str) {
+    if let Some(config) = dirs::config_dir() {
+        let _ = fs::remove_file(config.join(identifier).join(WIPE_MARKER));
+    }
+}
 
 // ---- app -----------------------------------------------------------------------------------
 
@@ -316,6 +340,19 @@ fn enable_media(app: &AppHandle) {
 #[cfg(not(target_os = "linux"))]
 fn enable_media(_app: &AppHandle) {}
 
+/// The windows have `dragDropEnabled` off (tauri.conf.json): Tauri's own drop handler takes
+/// every file drop for itself - on Windows it even tells WebView2 to refuse them - so with it
+/// on, a file dragged onto the composer never reached the page and drag-to-attach did nothing.
+/// The engine handles drops now, and when a file lands somewhere the page does not take it,
+/// the engine opens it: the window would navigate to `file:///...` in place of the app, with no
+/// title bar to get back by (the frontend draws that). The app never has a reason to show a
+/// local file, so that navigation is refused; every other navigation is left as it was.
+fn refuse_file_navigation<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("strafe-no-file-navigation")
+        .on_navigation(|_webview, url| url.scheme() != "file")
+        .build()
+}
+
 pub fn run() {
     let context = tauri::generate_context!();
     wipe_webview_storage_if_asked(&context.config().identifier);
@@ -338,7 +375,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(refuse_file_navigation());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
@@ -392,6 +430,18 @@ pub fn run() {
                 }
             }
         })
-        .run(context)
-        .expect("error while running Strafe");
+        .build(context)
+        .expect("error while building Strafe")
+        .run(|app, event| {
+            // On macOS, clicking Strafe in the Dock or opening it again from Finder or Launchpad
+            // starts no second process (so the single-instance callback above never runs); the
+            // running one is asked to reopen instead. With the window closed to the tray, or a
+            // `--minimized` launch, that has to bring the window back or the click does nothing.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
