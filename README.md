@@ -15,6 +15,23 @@ else in Strafe.
 Downloads are at [strafe.chat/download](https://strafe.chat/download), which lists the files of
 the newest [release](https://github.com/StrafeChat/desktop/releases).
 
+### Installing on macOS
+
+The Mac app is signed but not yet notarized by Apple, so the first launch needs one approval:
+
+1. Open the `.dmg` and drag Strafe into Applications.
+2. Open Strafe. macOS says it could not verify the app; click **Done**.
+3. Open **System Settings → Privacy & Security**, find "Strafe was blocked", click
+   **Open Anyway** and confirm. On macOS 14 or earlier you can instead Control-click Strafe in
+   Applications and choose **Open**.
+
+After that it opens normally and updates itself. macOS may ask for the microphone and camera
+again after an update.
+
+Versions up to 1.4.1 were not signed at all, and macOS reports them as "damaged and can't be
+opened". Install a newer version, or clear the download flag on the copy you have:
+`xattr -dr com.apple.quarantine /Applications/Strafe.app`.
+
 ## Two shells
 
 The same web client runs in two shells:
@@ -116,6 +133,13 @@ writes it for Windows and macOS; `scripts/linux-update-feed.mjs` then adds the L
 unless each bundle's signature verifies against the public key and names that file and
 version. Its release notes (`notes`) are the workflow's `releaseBody`, and they are what the
 update prompt shows.
+
+The macOS bundles are code-signed ad hoc (`bundle.macOS.signingIdentity` is `"-"`), which seals
+the whole app so a download can be approved and opened, but they are not notarized; an
+unsigned bundle is what macOS calls "damaged". The workflow mounts each `.dmg` and fails unless
+its app verifies with `codesign --strict` and carries the microphone and camera entitlements.
+Notarizing needs an Apple Developer ID; the workflow's header lists the secrets that switch it
+on.
 
 Updates are signed with a minisign key. The public half is `plugins.updater.pubkey` in
 `src-tauri/tauri.conf.json`, and the Electron shell carries the same key in

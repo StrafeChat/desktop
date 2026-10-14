@@ -31,6 +31,10 @@ file covers what is particular to this repository. `README.md` has the detail.
 - A `v<version>` tag runs `.github/workflows/release.yml`: Tauri builds Windows and macOS and
   drafts the release with `latest.json`; the `linux` job builds and signs the AppImage, deb and
   rpm; `linux-release` attaches them and adds their entries to `latest.json`.
+- macOS bundles are signed ad hoc (`bundle.macOS.signingIdentity: "-"`) until there is an
+  Apple Developer ID, and the workflow fails if the app inside a `.dmg` does not pass
+  `codesign --verify --strict` or lacks the microphone and camera entitlements. Never ship an
+  unsigned Mac bundle: macOS reports it as damaged and offers no way to open it (issue #1).
 - Keep the Linux artifact names (`Strafe_<v>_amd64.AppImage`, `Strafe_<v>_amd64.deb`,
   `Strafe-<v>-1.x86_64.rpm`), the package name `strafe` and the executable `strafe-desktop`:
   strafe.chat/download, the feed script, CI and in-place upgrades from older installs all

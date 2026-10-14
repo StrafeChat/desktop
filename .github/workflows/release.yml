@@ -21,6 +21,13 @@
 # has none). They sign the Tauri and the Electron bundles alike. The matching public key is in
 # src-tauri/tauri.conf.json; an installed app, on either shell, only accepts updates signed
 # by it.
+#
+# macOS code signing is ad hoc (bundle.macOS.signingIdentity "-"): the whole bundle is sealed,
+# so a download opens after the person approves it once in System Settings, but it is not
+# notarized. With an Apple Developer ID, add APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD and
+# APPLE_SIGNING_IDENTITY (which overrides the "-"), plus APPLE_API_KEY, APPLE_API_ISSUER and
+# APPLE_API_KEY_PATH for notarization, to tauri-action's env below - only once they exist: an
+# empty APPLE_CERTIFICATE still makes the bundler try to import it.
 name: Release
 
 on:
@@ -79,6 +86,29 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      # A bundle whose code signature does not cover all of it is what macOS reports as
+      # "damaged and can't be opened" once downloaded, with no button past it (issue #1: no Mac
+      # release up to 1.4.1 was signed at all). tauri-action has already uploaded to the draft, so
+      # a failure here means: do not publish it. The check runs on the copy inside the dmg,
+      # which is what people download, and also requires the microphone and camera
+      # entitlements, without which the hardened runtime keeps calls silent and dark.
+      - name: Check the macOS signature
+        if: matrix.platform == 'macos-latest'
+        run: |
+          set -euo pipefail
+          target="${{ matrix.args }}"
+          target="${target#--target }"
+          dmg=$(ls src-tauri/target/"$target"/release/bundle/dmg/*.dmg)
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt" >/dev/null' EXIT
+          codesign --verify --deep --strict --verbose=2 "$mnt/Strafe.app"
+          codesign --display --verbose=2 "$mnt/Strafe.app"
+          ents=$(codesign --display --entitlements - --xml "$mnt/Strafe.app" 2>/dev/null)
+          for key in com.apple.security.device.audio-input com.apple.security.device.camera; do
+            grep -q "$key" <<<"$ents" || { echo "::error::$key is missing from the signed app"; exit 1; }
+          done
 
   linux:
     # WebKitGTK cannot carry an end-to-end encrypted call, so Linux gets the same web client on

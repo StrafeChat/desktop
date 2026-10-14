@@ -4,8 +4,9 @@
   Applied when the macOS bundle is code-signed (bundle.macOS.entitlements in tauri.conf.json).
   Tauri signs with the hardened runtime by default, and under it the microphone and the camera
   stay off unless these are present - whatever Info.plist says and whatever the person answers.
-  The CI build is not signed with an Apple identity today, so these do nothing yet; they are
-  here so that adding one does not quietly take calls' audio and video away again.
+  Releases are signed ad hoc (signingIdentity "-") until there is an Apple Developer ID, and the
+  hardened runtime applies to that signature too, so calls need these today. The release
+  workflow refuses a signed app that lacks either.
 -->
 <plist version="1.0">
 <dict>
