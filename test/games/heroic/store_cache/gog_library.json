@@ -1,0 +1,6 @@
+{
+  "games": [
+    { "app_name": "1400000001", "runner": "gog", "title": "GOG Fixture", "is_installed": true },
+    { "app_name": "1400000002", "runner": "gog", "title": "GOG Fixture Not Installed", "is_installed": false }
+  ]
+}

@@ -1,0 +1,23 @@
+"AppState"
+{
+	"appid"		"900004"
+	"universe"		"1"
+	"name"		"Second Library Game™ "
+	"StateFlags"		"4"
+	"installdir"		"SecondGame"
+	"LastUpdated"		"1760000000"
+	"SizeOnDisk"		"1048576"
+	"buildid"		"1"
+	"InstalledDepots"
+	{
+		"900005"
+		{
+			"manifest"		"1000000000000000001"
+			"size"		"1048576"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

@@ -18,6 +18,8 @@ const { ORIGIN, isAppUrl: isAppUrlFor } = require('./origin');
  *   STRAFE_UPDATE_FEED     read this latest.json instead of the release's
  *   STRAFE_UPDATE_PUBKEY   verify updates with this (test) key instead of the release key
  *   STRAFE_DISCORD_APP_ID  another Discord application; empty turns presence off
+ *   STRAFE_GAMES_FILE      recognise games by this list instead of games.json
+ *   STRAFE_GAMES_POLL_MS   look for a game this often (ms, at least 1000) instead of every 15 s
  */
 const dev = app.isPackaged
   ? {}
@@ -28,6 +30,8 @@ const dev = app.isPackaged
       shareSource: process.env.STRAFE_SHARE_SOURCE || '',
       updateFeed: process.env.STRAFE_UPDATE_FEED || '',
       discordAppId: process.env.STRAFE_DISCORD_APP_ID,
+      gamesFile: process.env.STRAFE_GAMES_FILE || '',
+      gamesPollMs: process.env.STRAFE_GAMES_POLL_MS || '',
     };
 
 let devOrigin = '';

@@ -1,0 +1,10 @@
+{
+  "FormatVersion": 0,
+  "bIsIncompleteInstall": true,
+  "LaunchExecutable": "Incomplete.exe",
+  "DisplayName": "Incomplete Fixture",
+  "InstallLocation": "{FIXTURES}/games/epic/Incomplete",
+  "AppName": "FixtureIncomplete",
+  "MainGameAppName": "FixtureIncomplete",
+  "AppCategories": ["public", "games", "applications"]
+}

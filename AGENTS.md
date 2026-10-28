@@ -12,8 +12,17 @@ file covers what is particular to this repository. `README.md` has the detail.
   tests below, and never make a call "work" by letting it run unencrypted.
 - A feature that lives in the shell is written twice: Rust in `src-tauri/`, JavaScript in
   `electron/` (main process plus `preload.js`). Keep the two behaving the same - the same
-  files in the same config directory (`chat.strafe.desktop`: `accounts.json` owner-only,
-  `prefs.json`), the same defaults, the same Settings.
+  files in the same config directory (`chat.strafe.desktop`: `accounts.json` owner-only;
+  `prefs.json`, which the page saves whole from Settings -> Desktop; `activity.json`, owner-only,
+  game sharing per account plus hidden, renamed and added games - read and written only by the
+  shell's games handlers and never folded into `prefs.json`, where a Desktop-settings save would
+  wipe the hide list), the same defaults, the same Settings. Game detection reads one list,
+  `games.json` at the repository root (Electron ships it via `extraResources`, Tauri builds it in
+  with `include_str!`), and both shells' tests run the shared cases in `test/games/` (its
+  README says how). Known gap: on macOS, `sysinfo` reads each same-user process's argument
+  buffer (KERN_PROCARGS2) whenever it lists processes; the shell takes only the path from it and
+  never parses, keeps, logs or sends the rest. Listing with libc (`proc_listallpids`,
+  `proc_pidinfo`, `proc_pidpath`) would avoid even that read.
 
 ## The bridge contract
 

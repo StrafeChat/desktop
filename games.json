@@ -1,0 +1,591 @@
+{
+  "version": 1,
+  "license": "CC0-1.0",
+  "about": {
+    "summary": "What Strafe Desktop needs to recognise a game from a running process on this device. Written by Strafe contributors from public knowledge (not copied from Discord's, SteamDB's or any other compiled list) and released under CC0. Read by both shells: electron/src/games (Linux) and src-tauri/src/games (Windows, macOS). Nothing here is fetched at runtime.",
+    "patterns": "launchers, helpers and interpreters are lists of patterns, compared case-insensitively. A pattern without '/' is an executable basename, where '*' stands for any run of characters (so 'vc_redist*.exe'). A pattern with '/' is a path segment: it matches when the process's path, with '\\' turned into '/', contains it (so '/_commonredist/').",
+    "launchers": "Store clients and their services: never a game on their own, and never offered when adding a game. A game started from one is recognised by its own process.",
+    "launcherLabels": "Names a launcher gives its whole Wine prefix in Lutris (GAME_NAME). A process carrying one of these is matched by its own path or the curated list instead.",
+    "helpers": "Processes that are never the game even inside a game's folder: crash reporters, installers, anti-cheat services, Wine's own system processes.",
+    "interpreters": "Runtimes that run many different programs. Never offered when adding a game (a Wine program is offered by its own name instead).",
+    "wineLoaders": "Executable basenames of Wine and Proton's loader. Such a process is the Windows program named by its first argument.",
+    "steamToolAppids": "Steam app ids that are tools, runtimes or always-on applications, never games.",
+    "steamToolNamePrefixes": "Steam app names that start with one of these (case-insensitive) are tools too, for the ones the id list does not know yet.",
+    "curated": "Games recognised by name: { id, name, match: [{ os: win32|darwin|linux, exe: basename (case-insensitive, exact), pathContains?: path segment (case-insensitive, '/' separators), cmdlineAny?: [substring of one argument (case-sensitive)] }] }. Entries are tried in this order and the first that matches wins. cmdlineAny is only allowed on java/javaw rules: no other process's command line is read. On Linux a Wine process is matched against the win32 rules by the program Wine runs."
+  },
+  "launchers": [
+    "steam",
+    "steam.exe",
+    "steamwebhelper",
+    "steamwebhelper.exe",
+    "steamservice.exe",
+    "steamerrorreporter*",
+    "gameoverlayui",
+    "gameoverlayui.exe",
+    "gameoverlayui64.exe",
+    "steam-launch-wrapper",
+    "steam-runtime-*",
+    "fossilize_replay",
+    "pv-adverb",
+    "pv-bwrap",
+    "srt-bwrap",
+    "srt-logger",
+    "pressure-vessel*",
+    "/ubuntu12_32/",
+    "/ubuntu12_64/",
+    "/steamapps/common/proton ",
+    "/steamapps/common/steamlinuxruntime",
+    "/steamapps/common/steamworks shared/",
+    "/compatibilitytools.d/",
+    "EpicGamesLauncher.exe",
+    "EpicWebHelper.exe",
+    "Battle.net.exe",
+    "Battle.net Launcher.exe",
+    "Agent.exe",
+    "EADesktop.exe",
+    "EABackgroundService.exe",
+    "EALocalHostSvc.exe",
+    "EAConnect_microsoft.exe",
+    "Origin.exe",
+    "upc.exe",
+    "UbisoftConnect.exe",
+    "UplayWebCore.exe",
+    "UbisoftGameLauncher.exe",
+    "UbisoftGameLauncher64.exe",
+    "GalaxyClient.exe",
+    "GalaxyClient Helper.exe",
+    "GOG Galaxy Notifications Renderer.exe",
+    "RiotClientServices.exe",
+    "Riot Client.exe",
+    "RiotClientUx.exe",
+    "RiotClientUxRender.exe",
+    "itch",
+    "itch.exe",
+    "heroic",
+    "heroic.exe",
+    "legendary",
+    "gogdl",
+    "nile",
+    "lutris",
+    "lutris-wrapper",
+    "Playnite.DesktopApp.exe",
+    "Playnite.FullscreenApp.exe",
+    "MinecraftLauncher.exe",
+    "minecraft-launcher",
+    "prismlauncher",
+    "prismlauncher.exe",
+    "modrinth-app",
+    "modrinth-app-wrapped",
+    "Modrinth App.exe",
+    "hytale-launcher",
+    "hytale-launcher-wrapper",
+    "JagexLauncher.exe",
+    "RobloxPlayerLauncher.exe",
+    "RobloxPlayerInstaller.exe",
+    "Bloxstrap.exe",
+    "vinegar",
+    "/rockstar games/launcher/",
+    "SocialClubHelper.exe",
+    "RockstarService.exe",
+    "Amazon Games UI.exe",
+    "wgc.exe",
+    "HYP.exe",
+    "XboxPcApp.exe",
+    "GamingServices.exe"
+  ],
+  "launcherLabels": [
+    "EA App",
+    "Origin",
+    "Battle.net",
+    "Blizzard Battle.net",
+    "Ubisoft Connect",
+    "Uplay",
+    "Epic Games Store",
+    "Epic Games Launcher",
+    "GOG Galaxy",
+    "Amazon Games",
+    "Rockstar Games Launcher",
+    "itch.io",
+    "Riot Client",
+    "Riot Games",
+    "Steam",
+    "Xbox",
+    "Jagex Launcher",
+    "HoYoPlay"
+  ],
+  "helpers": [
+    "CrashReportClient.exe",
+    "UnityCrashHandler32.exe",
+    "UnityCrashHandler64.exe",
+    "crashpad_handler",
+    "crashpad_handler.exe",
+    "BsSndRpt.exe",
+    "BsSndRpt64.exe",
+    "BlizzardError.exe",
+    "RiotClientCrashHandler.exe",
+    "vc_redist*.exe",
+    "vcredist*.exe",
+    "DXSETUP.exe",
+    "dotNetFx*.exe",
+    "UE4PrereqSetup_x64.exe",
+    "UEPrereqSetup_x64.exe",
+    "oalinst.exe",
+    "EasyAntiCheat*.exe",
+    "EOSOverlayRenderer-*.exe",
+    "BEService*.exe",
+    "UnrealCEFSubProcess.exe",
+    "CefSharp.BrowserSubprocess.exe",
+    "QtWebEngineProcess*",
+    "Overwolf*.exe",
+    "sober_services",
+    "wineserver",
+    "wineboot*",
+    "winedevice.exe",
+    "services.exe",
+    "plugplay.exe",
+    "svchost.exe",
+    "rpcss.exe",
+    "explorer.exe",
+    "start.exe",
+    "conhost.exe",
+    "tabtip.exe",
+    "rundll32.exe",
+    "winemenubuilder.exe",
+    "msiexec.exe",
+    "/_commonredist/",
+    "/__installer/",
+    "/redist/",
+    "/windows/system32/",
+    "/windows/syswow64/"
+  ],
+  "interpreters": [
+    "java",
+    "javaw",
+    "java.exe",
+    "javaw.exe",
+    "python",
+    "python.exe",
+    "python2*",
+    "python3*",
+    "pypy*",
+    "mono",
+    "mono-sgen",
+    "dotnet",
+    "dotnet.exe",
+    "node",
+    "node.exe",
+    "perl",
+    "ruby",
+    "lua",
+    "lua5.*",
+    "luajit",
+    "wine",
+    "wine64",
+    "wine-preloader",
+    "wine64-preloader"
+  ],
+  "wineLoaders": [
+    "wine",
+    "wine64",
+    "wine-preloader",
+    "wine64-preloader"
+  ],
+  "steamToolAppids": [
+    "1007",
+    "228980",
+    "858280",
+    "961940",
+    "1054830",
+    "1113280",
+    "1245040",
+    "1420170",
+    "1580130",
+    "1887720",
+    "2348590",
+    "2805730",
+    "3658110",
+    "4628710",
+    "4628740",
+    "1493710",
+    "4427310",
+    "2180100",
+    "2230260",
+    "3086180",
+    "1161040",
+    "1826330",
+    "1070560",
+    "1391110",
+    "1628350",
+    "4183110",
+    "4185400",
+    "4690330",
+    "3127680",
+    "3029110",
+    "250820",
+    "431960",
+    "993090",
+    "400040"
+  ],
+  "steamToolNamePrefixes": [
+    "Proton ",
+    "Steam Linux Runtime",
+    "Steamworks ",
+    "SteamVR"
+  ],
+  "curated": [
+    {
+      "id": "minecraft-java",
+      "name": "Minecraft",
+      "match": [
+        { "os": "linux", "exe": "java", "cmdlineAny": ["net.minecraft.client.main.Main", "net.fabricmc.loader.impl.launch.knot.KnotClient", "org.quiltmc.loader.impl.launch.knot.KnotClient", "cpw.mods.", "net.minecraft.launchwrapper.Launch", "org.prismlauncher.EntryPoint", "org.multimc.EntryPoint", "-Dminecraft.launcher.brand="] },
+        { "os": "win32", "exe": "javaw.exe", "cmdlineAny": ["net.minecraft.client.main.Main", "net.fabricmc.loader.impl.launch.knot.KnotClient", "org.quiltmc.loader.impl.launch.knot.KnotClient", "cpw.mods.", "net.minecraft.launchwrapper.Launch", "org.prismlauncher.EntryPoint", "org.multimc.EntryPoint", "-Dminecraft.launcher.brand="] },
+        { "os": "win32", "exe": "java.exe", "cmdlineAny": ["net.minecraft.client.main.Main", "net.fabricmc.loader.impl.launch.knot.KnotClient", "org.quiltmc.loader.impl.launch.knot.KnotClient", "cpw.mods.", "net.minecraft.launchwrapper.Launch", "org.prismlauncher.EntryPoint", "org.multimc.EntryPoint", "-Dminecraft.launcher.brand="] },
+        { "os": "darwin", "exe": "java", "cmdlineAny": ["net.minecraft.client.main.Main", "net.fabricmc.loader.impl.launch.knot.KnotClient", "org.quiltmc.loader.impl.launch.knot.KnotClient", "cpw.mods.", "net.minecraft.launchwrapper.Launch", "org.prismlauncher.EntryPoint", "org.multimc.EntryPoint", "-Dminecraft.launcher.brand="] }
+      ]
+    },
+    {
+      "id": "minecraft-bedrock",
+      "name": "Minecraft",
+      "match": [
+        { "os": "win32", "exe": "Minecraft.Windows.exe" },
+        { "os": "linux", "exe": "mcpelauncher-client" }
+      ]
+    },
+    {
+      "id": "old-school-runescape",
+      "name": "Old School RuneScape",
+      "match": [
+        { "os": "win32", "exe": "osclient.exe" },
+        { "os": "win32", "exe": "RuneLite.exe" },
+        { "os": "win32", "exe": "javaw.exe", "cmdlineAny": ["net.runelite.client.RuneLite"] },
+        { "os": "linux", "exe": "java", "cmdlineAny": ["net.runelite.client.RuneLite", "net.runelite.launcher.Launcher"] },
+        { "os": "darwin", "exe": "java", "cmdlineAny": ["net.runelite.client.RuneLite", "net.runelite.launcher.Launcher"] }
+      ]
+    },
+    {
+      "id": "roblox",
+      "name": "Roblox",
+      "match": [
+        { "os": "win32", "exe": "RobloxPlayerBeta.exe" },
+        { "os": "darwin", "exe": "RobloxPlayer", "pathContains": "/roblox.app/" },
+        { "os": "linux", "exe": "sober" }
+      ]
+    },
+    {
+      "id": "league-of-legends",
+      "name": "League of Legends",
+      "match": [
+        { "os": "win32", "exe": "League of Legends.exe" },
+        { "os": "win32", "exe": "LeagueClient.exe" }
+      ]
+    },
+    {
+      "id": "valorant",
+      "name": "VALORANT",
+      "match": [
+        { "os": "win32", "exe": "VALORANT-Win64-Shipping.exe" }
+      ]
+    },
+    {
+      "id": "overwatch-2",
+      "name": "Overwatch 2",
+      "match": [
+        { "os": "win32", "exe": "Overwatch.exe" }
+      ]
+    },
+    {
+      "id": "world-of-warcraft",
+      "name": "World of Warcraft",
+      "match": [
+        { "os": "win32", "exe": "Wow.exe" },
+        { "os": "win32", "exe": "WowClassic.exe" },
+        { "os": "darwin", "exe": "World of Warcraft", "pathContains": "/world of warcraft.app/" }
+      ]
+    },
+    {
+      "id": "hearthstone",
+      "name": "Hearthstone",
+      "match": [
+        { "os": "win32", "exe": "Hearthstone.exe" },
+        { "os": "darwin", "exe": "Hearthstone", "pathContains": "/hearthstone.app/" }
+      ]
+    },
+    {
+      "id": "diablo-iv",
+      "name": "Diablo IV",
+      "match": [
+        { "os": "win32", "exe": "Diablo IV.exe" }
+      ]
+    },
+    {
+      "id": "diablo-iii",
+      "name": "Diablo III",
+      "match": [
+        { "os": "win32", "exe": "Diablo III64.exe" },
+        { "os": "win32", "exe": "Diablo III.exe" }
+      ]
+    },
+    {
+      "id": "starcraft-ii",
+      "name": "StarCraft II",
+      "match": [
+        { "os": "win32", "exe": "SC2_x64.exe" },
+        { "os": "win32", "exe": "SC2.exe" }
+      ]
+    },
+    {
+      "id": "heroes-of-the-storm",
+      "name": "Heroes of the Storm",
+      "match": [
+        { "os": "win32", "exe": "HeroesOfTheStorm_x64.exe" }
+      ]
+    },
+    {
+      "id": "call-of-duty",
+      "name": "Call of Duty",
+      "match": [
+        { "os": "win32", "exe": "cod.exe" }
+      ]
+    },
+    {
+      "id": "osu",
+      "name": "osu!",
+      "match": [
+        { "os": "win32", "exe": "osu!.exe" },
+        { "os": "linux", "exe": "osu!" },
+        { "os": "darwin", "exe": "osu!", "pathContains": "/osu!.app/" }
+      ]
+    },
+    {
+      "id": "genshin-impact",
+      "name": "Genshin Impact",
+      "match": [
+        { "os": "win32", "exe": "GenshinImpact.exe" },
+        { "os": "win32", "exe": "YuanShen.exe" }
+      ]
+    },
+    {
+      "id": "honkai-star-rail",
+      "name": "Honkai: Star Rail",
+      "match": [
+        { "os": "win32", "exe": "StarRail.exe" }
+      ]
+    },
+    {
+      "id": "zenless-zone-zero",
+      "name": "Zenless Zone Zero",
+      "match": [
+        { "os": "win32", "exe": "ZenlessZoneZero.exe" }
+      ]
+    },
+    {
+      "id": "fortnite",
+      "name": "Fortnite",
+      "match": [
+        { "os": "win32", "exe": "FortniteClient-Win64-Shipping.exe" }
+      ]
+    },
+    {
+      "id": "rocket-league",
+      "name": "Rocket League",
+      "match": [
+        { "os": "win32", "exe": "RocketLeague.exe" }
+      ]
+    },
+    {
+      "id": "apex-legends",
+      "name": "Apex Legends",
+      "match": [
+        { "os": "win32", "exe": "r5apex.exe" },
+        { "os": "win32", "exe": "r5apex_dx12.exe" }
+      ]
+    },
+    {
+      "id": "warframe",
+      "name": "Warframe",
+      "match": [
+        { "os": "win32", "exe": "Warframe.x64.exe" }
+      ]
+    },
+    {
+      "id": "path-of-exile-2",
+      "name": "Path of Exile 2",
+      "match": [
+        { "os": "win32", "exe": "PathOfExile.exe", "pathContains": "/path of exile 2/" },
+        { "os": "win32", "exe": "PathOfExile_x64.exe", "pathContains": "/path of exile 2/" },
+        { "os": "win32", "exe": "PathOfExileSteam.exe", "pathContains": "/path of exile 2/" },
+        { "os": "win32", "exe": "PathOfExile_x64Steam.exe", "pathContains": "/path of exile 2/" }
+      ]
+    },
+    {
+      "id": "path-of-exile",
+      "name": "Path of Exile",
+      "match": [
+        { "os": "win32", "exe": "PathOfExile.exe" },
+        { "os": "win32", "exe": "PathOfExile_x64.exe" },
+        { "os": "win32", "exe": "PathOfExileSteam.exe" },
+        { "os": "win32", "exe": "PathOfExile_x64Steam.exe" }
+      ]
+    },
+    {
+      "id": "final-fantasy-xiv",
+      "name": "Final Fantasy XIV Online",
+      "match": [
+        { "os": "win32", "exe": "ffxiv_dx11.exe" }
+      ]
+    },
+    {
+      "id": "guild-wars-2",
+      "name": "Guild Wars 2",
+      "match": [
+        { "os": "win32", "exe": "Gw2-64.exe" }
+      ]
+    },
+    {
+      "id": "lost-ark",
+      "name": "Lost Ark",
+      "match": [
+        { "os": "win32", "exe": "LOSTARK.exe" }
+      ]
+    },
+    {
+      "id": "destiny-2",
+      "name": "Destiny 2",
+      "match": [
+        { "os": "win32", "exe": "destiny2.exe" }
+      ]
+    },
+    {
+      "id": "escape-from-tarkov",
+      "name": "Escape from Tarkov",
+      "match": [
+        { "os": "win32", "exe": "EscapeFromTarkov.exe" }
+      ]
+    },
+    {
+      "id": "the-sims-4",
+      "name": "The Sims 4",
+      "match": [
+        { "os": "win32", "exe": "TS4_x64.exe" },
+        { "os": "darwin", "exe": "The Sims 4", "pathContains": "/the sims 4.app/" }
+      ]
+    },
+    {
+      "id": "gta-v-enhanced",
+      "name": "Grand Theft Auto V Enhanced",
+      "match": [
+        { "os": "win32", "exe": "GTA5_Enhanced.exe" }
+      ]
+    },
+    {
+      "id": "gta-v-legacy",
+      "name": "Grand Theft Auto V Legacy",
+      "match": [
+        { "os": "win32", "exe": "GTA5.exe" }
+      ]
+    },
+    {
+      "id": "marvel-rivals",
+      "name": "Marvel Rivals",
+      "match": [
+        { "os": "win32", "exe": "Marvel-Win64-Shipping.exe" }
+      ]
+    },
+    {
+      "id": "counter-strike-2",
+      "name": "Counter-Strike 2",
+      "match": [
+        { "os": "win32", "exe": "cs2.exe" },
+        { "os": "linux", "exe": "cs2" }
+      ]
+    },
+    {
+      "id": "dota-2",
+      "name": "Dota 2",
+      "match": [
+        { "os": "win32", "exe": "dota2.exe" },
+        { "os": "linux", "exe": "dota2" }
+      ]
+    },
+    {
+      "id": "rainbow-six-siege",
+      "name": "Tom Clancy's Rainbow Six Siege",
+      "match": [
+        { "os": "win32", "exe": "RainbowSix.exe" },
+        { "os": "win32", "exe": "RainbowSix_Vulkan.exe" },
+        { "os": "win32", "exe": "RainbowSix_BE.exe" }
+      ]
+    },
+    {
+      "id": "dead-by-daylight",
+      "name": "Dead by Daylight",
+      "match": [
+        { "os": "win32", "exe": "DeadByDaylight-Win64-Shipping.exe" }
+      ]
+    },
+    {
+      "id": "pubg",
+      "name": "PUBG: BATTLEGROUNDS",
+      "match": [
+        { "os": "win32", "exe": "TslGame.exe" }
+      ]
+    },
+    {
+      "id": "elden-ring",
+      "name": "ELDEN RING",
+      "match": [
+        { "os": "win32", "exe": "eldenring.exe" }
+      ]
+    },
+    {
+      "id": "among-us",
+      "name": "Among Us",
+      "match": [
+        { "os": "win32", "exe": "Among Us.exe" }
+      ]
+    },
+    {
+      "id": "terraria",
+      "name": "Terraria",
+      "match": [
+        { "os": "win32", "exe": "Terraria.exe" },
+        { "os": "linux", "exe": "Terraria.bin.x86_64" }
+      ]
+    },
+    {
+      "id": "factorio",
+      "name": "Factorio",
+      "match": [
+        { "os": "win32", "exe": "factorio.exe" },
+        { "os": "linux", "exe": "factorio" },
+        { "os": "darwin", "exe": "factorio", "pathContains": "/factorio.app/" }
+      ]
+    },
+    {
+      "id": "supertuxkart",
+      "name": "SuperTuxKart",
+      "match": [
+        { "os": "win32", "exe": "supertuxkart.exe" },
+        { "os": "linux", "exe": "supertuxkart" }
+      ]
+    },
+    {
+      "id": "0ad",
+      "name": "0 A.D.",
+      "match": [
+        { "os": "win32", "exe": "pyrogenesis.exe" },
+        { "os": "linux", "exe": "pyrogenesis" }
+      ]
+    },
+    {
+      "id": "luanti",
+      "name": "Luanti",
+      "match": [
+        { "os": "win32", "exe": "luanti.exe" },
+        { "os": "win32", "exe": "minetest.exe" },
+        { "os": "linux", "exe": "luanti" },
+        { "os": "linux", "exe": "minetest" }
+      ]
+    }
+  ]
+}

@@ -1,12 +1,12 @@
 [package]
 name = "strafe-desktop"
-version = "1.4.4"
+version = "1.5.0"
 description = "Strafe - the desktop app"
 authors = ["StrafeChat"]
 license = "MIT"
 repository = "https://github.com/StrafeChat/web.strafe.chat"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 
 # The frontend is the web client in ../src; this crate is the native shell around it. See
 # ../src/desktop/ for the half that runs inside the webview.
@@ -28,6 +28,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 discord-rich-presence = "1.1.0"
 dirs = "6"
+# Game activity (src/games): the process list, read on this device only. Just the `system`
+# feature; 0.39 needs rustc 1.95, so 0.38 until the toolchain moves.
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 # Desktop-only plugins (no mobile build exists today, but the cfg keeps the door open).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

@@ -1,0 +1,680 @@
+[
+  {
+    "name": "curated: VALORANT by its program on Windows",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "C:\\Riot Games\\VALORANT\\live\\ShooterGame\\Binaries\\Win64\\VALORANT-Win64-Shipping.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:valorant", "name": "VALORANT", "started_at": 1761000000000 }
+  },
+  {
+    "name": "curated: the program name is compared without case on Windows",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "D:\\GAMES\\ROCKET LEAGUE\\BINARIES\\WIN64\\ROCKETLEAGUE.EXE", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:rocket-league", "name": "Rocket League", "started_at": 1761000000000 }
+  },
+  {
+    "name": "curated: pathContains picks the app bundle on macOS",
+    "os": "darwin",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/Applications/Hearthstone/Hearthstone.app/Contents/MacOS/Hearthstone", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:hearthstone", "name": "Hearthstone", "started_at": 1761000000000 }
+  },
+  {
+    "name": "curated: without the pathContains folder it is not the game",
+    "os": "darwin",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/Users/someone/bin/Hearthstone", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "curated: rules are per OS (a Windows program name on Linux, not under Wine)",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/League of Legends.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "curated: Minecraft Java on Linux, by the java command line",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/jvm/java-21-openjdk/bin/java",
+        "cmdline": ["/usr/lib/jvm/java-21-openjdk/bin/java", "-Xmx2G", "-Dminecraft.launcher.brand=minecraft-launcher", "-cp", "libraries.jar", "net.minecraft.client.main.Main", "--version", "1.21"],
+        "environ": {}
+      }
+    ],
+    "expect": { "key": "curated:minecraft-java", "name": "Minecraft", "started_at": 1761000000000 }
+  },
+  {
+    "name": "curated: Minecraft through Fabric on Windows (javaw.exe)",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "C:\\Users\\someone\\AppData\\Roaming\\.minecraft\\runtime\\java-runtime-delta\\bin\\javaw.exe",
+        "cmdline": ["C:\\Users\\someone\\AppData\\Roaming\\.minecraft\\runtime\\java-runtime-delta\\bin\\javaw.exe", "-cp", "libraries.jar", "net.fabricmc.loader.impl.launch.knot.KnotClient", "--version", "fabric-loader"],
+        "environ": {}
+      }
+    ],
+    "expect": { "key": "curated:minecraft-java", "name": "Minecraft", "started_at": 1761000000000 }
+  },
+  {
+    "name": "curated: any other Java program is not a game",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/jvm/java-21-openjdk/bin/java", "cmdline": ["java", "-jar", "/opt/tools/build-server.jar"], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "curated: Roblox through Sober on Linux, its helper ignored",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/app/bin/sober", "cmdline": [], "environ": {} },
+      { "pid": 101, "ppid": 100, "start_ms": 1760999000000, "exe": "/app/bin/sober_services", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:roblox", "name": "Roblox", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Steam index: a native game in the main library",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Steam index: a game in a second library from libraryfolders.vdf, its name trimmed",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam-library2/steamapps/common/SecondGame/SecondGame.x86_64", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900004", "name": "Second Library Game™", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Steam index: a tool app id (steamToolAppids) is never a game",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/wallpaper_engine/wallpaper", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "Steam index: a tool by its name (steamToolNamePrefixes) is never a game",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/ExampleTool/tool", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "Steam index: the install folder comes before the curated list",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/factorio", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Steam index: a library seen through another mount point, by its steamapps/common folder",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/run/host/mnt/elsewhere/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Steam index: Windows paths are compared without case",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/FIXTURE GAME/Fixture.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "user-added: the exact program the person picked",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "user": [{ "id": "fixture1", "path": "{FIXTURES}/games/mine/mygame", "name": "My Own Game" }],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/mine/mygame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "user:fixture1", "name": "My Own Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "user-added: comes before the Steam index",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "user": [{ "id": "fixture2", "path": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "name": "Fixture Game (modded)" }],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "user:fixture2", "name": "Fixture Game (modded)", "started_at": 1761000000000 }
+  },
+  {
+    "name": "user-added: another program in the same folder is not it",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "user": [{ "id": "fixture1", "path": "{FIXTURES}/games/mine/mygame", "name": "My Own Game" }],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/mine/mygame-server", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "user-added: on Windows the path is compared without case",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "user": [{ "id": "fixture3", "path": "C:\\Games\\Mine\\MyGame.exe", "name": "My Windows Game" }],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "c:\\games\\mine\\mygame.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "user:fixture3", "name": "My Windows Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "launchers: the Steam client and its runtime are never games",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/ubuntu12_32/steam", "cmdline": [], "environ": {} },
+      { "pid": 101, "ppid": 100, "start_ms": 1761000001000, "exe": "{FIXTURES}/steam/ubuntu12_64/steamwebhelper", "cmdline": [], "environ": {} },
+      { "pid": 102, "ppid": 100, "start_ms": 1761000002000, "exe": "{FIXTURES}/steam/steamapps/common/SteamLinuxRuntime_sniper/pressure-vessel/bin/pv-adverb", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "launchers: store clients on Windows are never games",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "C:\\Program Files (x86)\\Steam\\steam.exe", "cmdline": [], "environ": {} },
+      { "pid": 101, "ppid": 1, "start_ms": 1761000001000, "exe": "C:\\Program Files (x86)\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe", "cmdline": [], "environ": {} },
+      { "pid": 102, "ppid": 1, "start_ms": 1761000002000, "exe": "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe", "cmdline": [], "environ": {} },
+      { "pid": 103, "ppid": 1, "start_ms": 1761000003000, "exe": "C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "helpers: a crash reporter inside a game's install folder",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/crashpad_handler", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "helpers: redistributables and crash handlers on Windows",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/_CommonRedist/vcredist/2022/VC_redist.x64.exe", "cmdline": [], "environ": {} },
+      { "pid": 101, "ppid": 1, "start_ms": 1761000001000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/UnityCrashHandler64.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "own processes: Strafe and everything under it are skipped",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "self_pid": 4000,
+    "processes": [
+      { "pid": 4000, "ppid": 1, "start_ms": 1761000000000, "exe": "/opt/Strafe/strafe-desktop.bin", "cmdline": [], "environ": {} },
+      { "pid": 4001, "ppid": 4000, "start_ms": 1761000001000, "exe": "/app/bin/sober", "cmdline": [], "environ": {} },
+      { "pid": 4002, "ppid": 4001, "start_ms": 1761000002000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "selection: the most recently started game wins",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+      { "pid": 200, "ppid": 1, "start_ms": 1761000060000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000060000 }
+  },
+  {
+    "name": "selection: a hidden game is never shared",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "hidden": ["steam:900001"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+      { "pid": 200, "ppid": 1, "start_ms": 1761000060000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:factorio", "name": "Factorio", "started_at": 1761000000000 }
+  },
+  {
+    "name": "selection: the only game hidden is nothing",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "hidden": ["curated:factorio"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "selection: a renamed game is shared under its new name",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "renames": { "curated:factorio": "Factorio (Space Age)" },
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:factorio", "name": "Factorio (Space Age)", "started_at": 1761000000000 }
+  },
+  {
+    "name": "selection: a game's session starts at its earliest process",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000005000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} },
+      { "pid": 90, "ppid": 1, "start_ms": 1761000001000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/FixtureLauncher", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000001000 }
+  },
+  {
+    "name": "selection: started at the same time, the more authoritative source wins",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "user": [{ "id": "fixture4", "path": "/home/someone/Games/indie/indie", "name": "Indie Fixture" }],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+      { "pid": 200, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/indie/indie", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "user:fixture4", "name": "Indie Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "selection: same start and source, the name decides",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/games/supertuxkart", "cmdline": [], "environ": {} },
+      { "pid": 200, "ppid": 1, "start_ms": 1761000000000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "curated:factorio", "name": "Factorio", "started_at": 1761000000000 }
+  },
+  {
+    "name": "selection: the choice sticks until a game started after it appears",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "scans": [
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000001000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "curated:factorio", "name": "Factorio", "started_at": 1761000001000 }
+      },
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000001000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+          { "pid": 50, "ppid": 1, "start_ms": 1761000000500, "exe": "/usr/games/supertuxkart", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "curated:factorio", "name": "Factorio", "started_at": 1761000001000 }
+      },
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000001000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+          { "pid": 50, "ppid": 1, "start_ms": 1761000000500, "exe": "/usr/games/supertuxkart", "cmdline": [], "environ": {} },
+          { "pid": 300, "ppid": 1, "start_ms": 1761000003000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000003000 }
+      },
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000001000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+          { "pid": 50, "ppid": 1, "start_ms": 1761000000500, "exe": "/usr/games/supertuxkart", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000003000 }
+      },
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000001000, "exe": "/home/someone/Games/factorio/bin/x64/factorio", "cmdline": [], "environ": {} },
+          { "pid": 50, "ppid": 1, "start_ms": 1761000000500, "exe": "/usr/games/supertuxkart", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "curated:factorio", "name": "Factorio", "started_at": 1761000001000 }
+      }
+    ]
+  },
+  {
+    "name": "ending: a game is over after two scans in a row without it",
+    "os": "linux",
+    "shells": ["node", "rust"],
+    "scans": [
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+      },
+      { "processes": [], "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 } },
+      { "processes": [], "expect": null }
+    ]
+  },
+  {
+    "name": "ending: back within one scan, the session goes on from its first start",
+    "os": "win32",
+    "shells": ["node", "rust"],
+    "scans": [
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000001000, "exe": "C:\\Program Files\\Respawn\\Apex\\r5apex.exe", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "curated:apex-legends", "name": "Apex Legends", "started_at": 1761000001000 }
+      },
+      { "processes": [], "expect": { "key": "curated:apex-legends", "name": "Apex Legends", "started_at": 1761000001000 } },
+      {
+        "processes": [
+          { "pid": 120, "ppid": 1, "start_ms": 1761000040000, "exe": "C:\\Program Files\\Respawn\\Apex\\r5apex_dx12.exe", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "curated:apex-legends", "name": "Apex Legends", "started_at": 1761000001000 }
+      },
+      { "processes": [], "expect": { "key": "curated:apex-legends", "name": "Apex Legends", "started_at": 1761000001000 } },
+      { "processes": [], "expect": null }
+    ]
+  },
+
+  {
+    "name": "reaper: Steam's launch command names the game, from the reaper's start",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/ubuntu12_32/reaper",
+        "cmdline": ["{FIXTURES}/steam/ubuntu12_32/reaper", "SteamLaunch", "AppId=900001", "--", "{FIXTURES}/steam/ubuntu12_32/steam-launch-wrapper", "--", "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame"],
+        "environ": {}
+      },
+      { "pid": 101, "ppid": 100, "start_ms": 1761000002000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "reaper: the reaper gone means the game ended, without a second scan",
+    "os": "linux",
+    "shells": ["node"],
+    "scans": [
+      {
+        "processes": [
+          { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/ubuntu12_32/reaper", "cmdline": ["{FIXTURES}/steam/ubuntu12_32/reaper", "SteamLaunch", "AppId=900001", "--", "x"], "environ": {} },
+          { "pid": 101, "ppid": 100, "start_ms": 1761000002000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/fixturegame", "cmdline": [], "environ": {} }
+        ],
+        "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+      },
+      { "processes": [], "expect": null }
+    ]
+  },
+  {
+    "name": "reaper: a tool's app id, or one with no manifest, is nothing",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/ubuntu12_32/reaper", "cmdline": ["{FIXTURES}/steam/ubuntu12_32/reaper", "SteamLaunch", "AppId=431960", "--", "x"], "environ": {} },
+      { "pid": 200, "ppid": 1, "start_ms": 1761000001000, "exe": "{FIXTURES}/steam/ubuntu12_32/reaper", "cmdline": ["{FIXTURES}/steam/ubuntu12_32/reaper", "SteamLaunch", "AppId=3999999999", "--", "x"], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "reaper: an AppId after -- belongs to the game's own arguments",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/ubuntu12_32/reaper", "cmdline": ["{FIXTURES}/steam/ubuntu12_32/reaper", "SteamLaunch", "--", "AppId=900001"], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "reaper: Steam's 64-bit runtime folder is Steam's too",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/ubuntu12_64/reaper", "cmdline": ["{FIXTURES}/steam/ubuntu12_64/reaper", "SteamLaunch", "AppId=900001", "--", "x"], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "reaper: a program merely called reaper (an audio editor) is not Steam's, and its command line is not read",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/opt/REAPER/reaper", "cmdline": ["/opt/REAPER/reaper", "SteamLaunch", "AppId=900001", "/home/someone/Music/project.rpp"], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "reaper: a game whose own program is called reaper is that game, by its install folder",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000005000, "exe": "{FIXTURES}/steam/steamapps/common/Fixture Game/bin/reaper", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "steam:900001", "name": "Fixture Game", "started_at": 1761000005000 }
+  },
+  {
+    "name": "Wine: a Proton game by its SteamAppId tag",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/steam/steamapps/common/Proton 9.0/files/bin/wine64-preloader",
+        "cmdline": ["Z:\\opt\\elsewhere\\FixtureProton\\Game.exe", "-dx12", ""],
+        "environ": { "SteamAppId": "900003", "SteamGameId": "900003", "STEAM_COMPAT_DATA_PATH": "{FIXTURES}/steam/steamapps/compatdata/900003", "SOME_TOKEN": "never-read" }
+      }
+    ],
+    "expect": { "key": "steam:900003", "name": "Fixture Proton Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Wine: a Proton game by its translated install path (Z: is /)",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine-preloader", "cmdline": ["Z:{FIXTURES}\\steam\\steamapps\\common\\Fixture Proton Game\\Game.exe"], "environ": {} }
+    ],
+    "expect": { "key": "steam:900003", "name": "Fixture Proton Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Wine: Wine's and Proton's own processes are helpers, whatever their tags say",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": ["C:\\windows\\system32\\services.exe"], "environ": { "SteamAppId": "900003", "STEAM_COMPAT_DATA_PATH": "{FIXTURES}/steam/steamapps/compatdata/900003" } },
+      { "pid": 101, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": ["C:\\windows\\system32\\steam.exe", "Game.exe"], "environ": { "SteamAppId": "900003", "STEAM_COMPAT_DATA_PATH": "{FIXTURES}/steam/steamapps/compatdata/900003" } },
+      { "pid": 102, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/bin/wineserver", "cmdline": [], "environ": { "SteamAppId": "900003" } }
+    ],
+    "expect": null
+  },
+  {
+    "name": "Wine: Steam's own tag beats a Lutris tag inherited from the Steam client",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader",
+        "cmdline": ["Z:\\opt\\elsewhere\\FixtureProton\\Game.exe"],
+        "environ": { "SteamAppId": "900003", "LUTRIS_GAME_UUID": "00000000-0000-4000-8000-000000000009", "GAME_NAME": "Lutris Fixture" }
+      }
+    ],
+    "expect": { "key": "steam:900003", "name": "Fixture Proton Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Wine: Heroic's tags name the game",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader",
+        "cmdline": ["Z:\\somewhere\\else\\HeroicFixture.exe"],
+        "environ": { "HEROIC_APP_NAME": "FixtureEpicApp", "HEROIC_APP_RUNNER": "legendary", "SteamAppId": "0", "SteamGameId": "heroic-FixtureEpicApp" }
+      }
+    ],
+    "expect": { "key": "heroic:legendary:FixtureEpicApp", "name": "Heroic Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Wine: Heroic's install folder, with no tags",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": ["Z:{FIXTURES}\\games\\heroic\\HeroicFixture\\Binaries\\Win64\\HeroicFixture.exe"], "environ": {} }
+    ],
+    "expect": { "key": "heroic:legendary:FixtureEpicApp", "name": "Heroic Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Heroic: a native GOG game by its install folder",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/heroic/GogFixture/game/fixture", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "heroic:gog:1400000001", "name": "GOG Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Lutris: GAME_NAME of a game Lutris has a file for",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader",
+        "cmdline": ["C:\\Games\\Whatever\\fixture.exe"],
+        "environ": { "LUTRIS_GAME_UUID": "00000000-0000-4000-8000-000000000001", "GAME_NAME": "Lutris Fixture", "WINEPREFIX": "{FIXTURES}/games/lutris/fixture" }
+      }
+    ],
+    "expect": { "key": "lutris:lutris-fixture", "name": "Lutris Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Lutris: a game it has no file for is named by GAME_NAME",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader",
+        "cmdline": ["C:\\Games\\Other\\other.exe"],
+        "environ": { "LUTRIS_GAME_UUID": "00000000-0000-4000-8000-000000000002", "GAME_NAME": "Some Other Game", "WINEPREFIX": "/home/someone/Games/other" }
+      }
+    ],
+    "expect": { "key": "lutris:some-other-game", "name": "Some Other Game", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Lutris: a launcher's label falls through to the curated list",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader",
+        "cmdline": ["C:\\Program Files\\Respawn\\Apex\\r5apex_dx12.exe"],
+        "environ": { "LUTRIS_GAME_UUID": "00000000-0000-4000-8000-000000000003", "GAME_NAME": "EA App", "WINEPREFIX": "{FIXTURES}/games/lutris/ea-app" }
+      }
+    ],
+    "expect": { "key": "curated:apex-legends", "name": "Apex Legends", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Lutris: a launcher's label and nothing else is nothing",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      {
+        "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader",
+        "cmdline": ["C:\\Program Files (x86)\\Some Tool\\tool.exe"],
+        "environ": { "LUTRIS_GAME_UUID": "00000000-0000-4000-8000-000000000004", "GAME_NAME": "battle.net", "WINEPREFIX": "/home/someone/Games/battlenet" }
+      }
+    ],
+    "expect": null
+  },
+  {
+    "name": "Lutris: the exact program from its game file",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/lutris/fixture/fixture.x86_64", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "lutris:lutris-fixture", "name": "Lutris Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Lutris: the installer script's program, and other files in the folder, are not the game",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/lutris/fixture/installer-only.x86_64", "cmdline": [], "environ": {} },
+      { "pid": 101, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/lutris/fixture/other-tool", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  },
+  {
+    "name": "Lutris: a launcher installed as a Lutris game is not indexed",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": ["C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EALauncher.exe"], "environ": { "WINEPREFIX": "{FIXTURES}/games/lutris/ea-app" } }
+    ],
+    "expect": null
+  },
+  {
+    "name": "Wine: C: is the prefix's drive_c, as the person added the game",
+    "os": "linux",
+    "shells": ["node"],
+    "user": [{ "id": "wine1", "path": "{FIXTURES}/games/wineprefix/drive_c/Games/Foo/Foo.exe", "name": "Foo" }],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": ["C:\\Games\\Foo\\Foo.exe"], "environ": { "WINEPREFIX": "{FIXTURES}/games/wineprefix" } }
+    ],
+    "expect": { "key": "user:wine1", "name": "Foo", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Wine: the curated list by the Windows program's name",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": ["C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe"], "environ": { "WINEPREFIX": "/home/someone/Games/league" } }
+    ],
+    "expect": { "key": "curated:league-of-legends", "name": "League of Legends", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Wine: without a command line there is no program to tell",
+    "os": "linux",
+    "shells": ["node"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "/usr/lib/wine/x86_64-unix/wine64-preloader", "cmdline": [], "environ": { "SteamAppId": "900003" } }
+    ],
+    "expect": null
+  },
+
+  {
+    "name": "Epic: a game by its manifest's install location",
+    "os": "win32",
+    "shells": ["rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/epic/EpicFixture/Binaries/Win64/EpicFixture-Win64-Shipping.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": { "key": "epic:FixtureEpicApp", "name": "Epic Fixture", "started_at": 1761000000000 }
+  },
+  {
+    "name": "Epic: an incomplete install is not indexed",
+    "os": "win32",
+    "shells": ["rust"],
+    "processes": [
+      { "pid": 100, "ppid": 1, "start_ms": 1761000000000, "exe": "{FIXTURES}/games/epic/Incomplete/Incomplete.exe", "cmdline": [], "environ": {} }
+    ],
+    "expect": null
+  }
+]

@@ -1,0 +1,10 @@
+game:
+  exe: '{FIXTURES}/games/lutris/ea-app/drive_c/Program Files/Electronic Arts/EA Desktop/EA Desktop/EALauncher.exe'
+  prefix: {FIXTURES}/games/lutris/ea-app
+game_slug: ea-app
+name: EA App
+slug: ea-app-standard
+system: {}
+version: Standard
+wine:
+  version: wine-ge-8-26-x86_64

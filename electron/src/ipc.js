@@ -96,12 +96,13 @@ function notify(title, body) {
 }
 
 /**
- * @param {object} ctx { prefs, discord, configDir } from app.js; prefs is replaced on save.
+ * @param {object} ctx { prefs, discord, games, configDir } from app.js; prefs is replaced on
+ * save; games is null when game activity is unavailable.
  */
 function registerIpc(ctx) {
   // Synchronous, once, as the preload starts: the bridge's constant fields.
   ipcMain.on('strafe:info', (event) => {
-    event.returnValue = fromApp(event) ? { appVersion: app.getVersion(), platform: PLATFORMS[process.platform] || 'linux' } : null;
+    event.returnValue = fromApp(event) ? { appVersion: app.getVersion(), platform: PLATFORMS[process.platform] || 'linux', games: !!ctx.games } : null;
   });
 
   on('strafe:ready', (event) => {
@@ -145,7 +146,12 @@ function registerIpc(ctx) {
   on('strafe:notify', (_event, title, body) => notify(title, body));
 
   handle('strafe:accounts:load', () => store.loadAccounts(ctx.configDir));
-  handle('strafe:accounts:save', (_event, value) => store.saveAccounts(ctx.configDir, value));
+  handle('strafe:accounts:save', (_event, value) => {
+    store.saveAccounts(ctx.configDir, value);
+    // Game sharing is per account: switching accounts switches it, and forgetting one forgets
+    // that it was sharing (src/games accountsSaved).
+    ctx.games?.accountsSaved(value);
+  });
 
   handle('strafe:prefs:load', () => ({ ...ctx.prefs }));
   handle('strafe:prefs:save', (_event, value) => {
@@ -180,6 +186,22 @@ function registerIpc(ctx) {
     }),
   );
   handle('strafe:updater:install', () => updater.install());
+
+  // Game activity (src/games; the page's side is web src/desktop/native.ts). The main window
+  // only: popups run the whole client too, and must neither report a game nor read the list.
+  // Arguments are checked again in src/games - these are what the preload let through.
+  const games = (event) => {
+    if (!fromMainWindow(event)) throw new Error('Only the main window can do that.');
+    if (!ctx.games) throw new Error('This build of Strafe cannot detect games.');
+    return ctx.games;
+  };
+  handle('strafe:games:getState', (event) => games(event).getState());
+  handle('strafe:games:setShare', (event, on, account) => games(event).setShare(on, account));
+  handle('strafe:games:setHidden', (event, key, hidden) => games(event).setHidden(key, hidden));
+  handle('strafe:games:rename', (event, key, name) => games(event).rename(key, name));
+  handle('strafe:games:running', (event) => games(event).runningPrograms());
+  handle('strafe:games:add', (event, id, name) => games(event).add(id, name));
+  handle('strafe:games:remove', (event, key) => games(event).remove(key));
 
   handle('strafe:screen:sources', () => media.sources());
   handle('strafe:screen:choose', (_event, id) => media.choose(id));

@@ -1,0 +1,23 @@
+"AppState"
+{
+	"appid"		"431960"
+	"universe"		"1"
+	"name"		"Wallpaper Engine"
+	"StateFlags"		"4"
+	"installdir"		"wallpaper_engine"
+	"LastUpdated"		"1760000000"
+	"SizeOnDisk"		"1048576"
+	"buildid"		"1"
+	"InstalledDepots"
+	{
+		"431961"
+		{
+			"manifest"		"1000000000000000001"
+			"size"		"1048576"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

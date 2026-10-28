@@ -39,6 +39,9 @@ extraResources:
   # Tray and window icons at runtime (the installers take theirs from linux.icon).
   - from: build/icons
     to: icons
+  # The games the app recognises (src/games), the same list the Tauri shell builds in.
+  - from: ../games.json
+    to: games.json
 
 # Puts a launcher in front of the executable for AppImages on systems that restrict user
 # namespaces, and flips the Electron fuses - there rather than under `electronFuses` here,

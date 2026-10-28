@@ -13,7 +13,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { app, Menu, protocol, session } = require('electron');
+const { app, Menu, powerMonitor, protocol, session } = require('electron');
 const env = require('./env');
 const { SCHEME } = require('./origin');
 const store = require('./store');
@@ -24,9 +24,40 @@ const { setUpMedia } = require('./media');
 const { createTray } = require('./tray');
 const { registerIpc } = require('./ipc');
 const { Discord, DISCORD_APP_ID } = require('./discord');
+const { Games } = require('./games');
+const { gamesFile, loadGames } = require('./games/data');
 
 /** The Tauri app's identifier, and so the name of the directories it keeps its files in. */
 const IDENTIFIER = 'chat.strafe.desktop';
+
+/**
+ * Game activity (src/games): off until the person turns it on in Settings -> Activity, and then
+ * it tells only the main window what to share. Null when the game list cannot be read, which
+ * leaves the feature out of the bridge altogether.
+ */
+function startGames(configDir, debug) {
+  let data;
+  try {
+    data = loadGames(env.dev.gamesFile ? path.resolve(env.dev.gamesFile) : gamesFile({ packaged: app.isPackaged, resourcesPath: process.resourcesPath }));
+  } catch (e) {
+    console.error(`game activity is unavailable: could not read games.json (${e.message})`);
+    return null;
+  }
+  const poll = Number(env.dev.gamesPollMs);
+  const games = new Games({
+    configDir,
+    data,
+    debug,
+    ...(Number.isInteger(poll) && poll >= 1000 ? { intervalMs: poll } : {}),
+    // Popups run the whole client too; only the main window reports a game.
+    onActivity: (activity) => {
+      const win = windows.mainWindow();
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('strafe:games:activity', activity);
+    },
+  });
+  games.start();
+  return games;
+}
 
 /** An XDG base directory, or its default when unset or (which the spec says to ignore)
  * relative. */
@@ -108,14 +139,18 @@ if (!app.requestSingleInstanceLock()) {
     setUpMedia(ses);
 
     const configDir = app.getPath('userData');
-    ctx = { configDir, prefs: store.loadPrefs(configDir), discord: null };
+    ctx = { configDir, prefs: store.loadPrefs(configDir), discord: null, games: null };
+    const debug = app.isPackaged ? () => {} : (msg) => console.error(msg);
     // STRAFE_DISCORD_APP_ID (development only) swaps the application; empty turns it off.
     const appId = env.dev.discordAppId !== undefined ? env.dev.discordAppId.trim() : DISCORD_APP_ID;
     ctx.discord = new Discord({
       appId,
       enabled: ctx.prefs.discordPresence,
-      debug: app.isPackaged ? () => {} : (msg) => console.error(msg),
+      debug,
     });
+    ctx.games = startGames(configDir, debug);
+    // Back from sleep: the game being shared may have ended hours ago.
+    powerMonitor.on('resume', () => ctx?.games?.resume());
 
     // Before the window loads: its preload asks for strafe:info synchronously.
     registerIpc(ctx);
@@ -136,7 +171,10 @@ if (!app.requestSingleInstanceLock()) {
 
   // From here on, closing a window means it.
   app.on('before-quit', () => windows.setQuitting());
-  // Leave Discord showing nothing rather than a Strafe that has gone.
-  app.on('will-quit', () => ctx?.discord?.stop());
+  // Leave Discord showing nothing rather than a Strafe that has gone, and stop looking for games.
+  app.on('will-quit', () => {
+    ctx?.discord?.stop();
+    ctx?.games?.stop();
+  });
   app.on('window-all-closed', () => app.quit());
 }

@@ -1,0 +1,41 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"{FIXTURES}/steam"
+		"label"		""
+		"contentid"		"1000000000000000001"
+		"totalsize"		"0"
+		"update_clean_bytes_tally"		"0"
+		"time_last_update_verified"		"1760000000"
+		"apps"
+		{
+			"900001"		"1048576"
+			"900002"		"1048576"
+			"900003"		"1048576"
+			"228980"		"1048576"
+			"431960"		"1048576"
+		}
+	}
+	"1"
+	{
+		"path"		"{FIXTURES}/steam-library2"
+		"label"		"Second \"fixture\" library"
+		"contentid"		"1000000000000000002"
+		"totalsize"		"1073741824"
+		"apps"
+		{
+			"900004"		"1048576"
+		}
+	}
+	"2"
+	{
+		"path"		"D:\\SteamLibrary\\Games"
+		"label"		""
+		"contentid"		"1000000000000000003"
+		"totalsize"		"0"
+		"apps"
+		{
+		}
+	}
+}

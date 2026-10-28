@@ -72,6 +72,12 @@ jobs:
 
       - run: npm ci && npm ci --prefix web
 
+      # Game detection (src-tauri/src/games), compiled and run on the OS it ships for: the cases
+      # in test/games that both shells must agree on (the linux job runs the Electron side's),
+      # plus the Windows and macOS paths that only build here. A failure stops the release.
+      - name: Test game detection
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib games
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

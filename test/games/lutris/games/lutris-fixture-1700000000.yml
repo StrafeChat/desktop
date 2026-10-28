@@ -1,0 +1,14 @@
+game:
+  exe: {FIXTURES}/games/lutris/fixture/fixture.x86_64
+  prefix: {FIXTURES}/games/lutris/fixture
+game_slug: lutris-fixture
+name: Lutris Fixture
+script:
+  game:
+    exe: {FIXTURES}/games/lutris/fixture/installer-only.x86_64
+  installer:
+  - chmodx: $GAMEDIR/fixture.x86_64
+slug: lutris-fixture-linux
+system: {}
+version: Linux
+year: 2026

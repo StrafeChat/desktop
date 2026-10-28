@@ -1,0 +1,10 @@
+{
+  "FormatVersion": 0,
+  "bIsIncompleteInstall": false,
+  "LaunchExecutable": "",
+  "DisplayName": "Epic Fixture: Extra Content",
+  "InstallLocation": "{FIXTURES}/games/epic/EpicFixture",
+  "AppName": "FixtureEpicDlc",
+  "MainGameAppName": "FixtureEpicApp",
+  "AppCategories": ["addons"]
+}

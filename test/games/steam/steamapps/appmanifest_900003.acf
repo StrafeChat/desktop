@@ -1,0 +1,23 @@
+"AppState"
+{
+	"appid"		"900003"
+	"universe"		"1"
+	"name"		"Fixture Proton Game"
+	"StateFlags"		"4"
+	"installdir"		"Fixture Proton Game"
+	"LastUpdated"		"1760000000"
+	"SizeOnDisk"		"1048576"
+	"buildid"		"1"
+	"InstalledDepots"
+	{
+		"900004"
+		{
+			"manifest"		"1000000000000000001"
+			"size"		"1048576"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

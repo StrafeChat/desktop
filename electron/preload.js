@@ -46,14 +46,41 @@ function presenceFields(p) {
   return out;
 }
 
+/** What a game activity push may carry: a name and a start, or null. */
+function activityFields(a) {
+  if (!a || typeof a !== 'object' || typeof a.name !== 'string') return null;
+  return { name: a.name, started_at: typeof a.started_at === 'number' && Number.isFinite(a.started_at) ? a.started_at : 0 };
+}
+
+/** Game activity (strafe:games:*, the main process's src/games): only strings and booleans
+ * cross, and only what each call takes. Only the main window gets it; the shell refuses a
+ * popup anyway. */
+const games = {
+  getState: () => call('strafe:games:getState'),
+  setShare: (on, account) => call('strafe:games:setShare', on === true, String(account)),
+  setHidden: (key, hidden) => call('strafe:games:setHidden', String(key), hidden === true),
+  rename: (key, name) => call('strafe:games:rename', String(key), name == null ? null : String(name)),
+  runningPrograms: () => call('strafe:games:running'),
+  add: (id, name) => call('strafe:games:add', String(id), String(name)),
+  remove: (key) => call('strafe:games:remove', String(key)),
+  onActivityChanged(cb) {
+    const listener = (_event, activity) => {
+      if (typeof cb === 'function') cb(activityFields(activity));
+    };
+    ipcRenderer.on('strafe:games:activity', listener);
+    return () => ipcRenderer.removeListener('strafe:games:activity', listener);
+  },
+};
+
 if (info) {
+  // The main process starts popups (the OAuth consent page) with this flag.
+  const isPopup = process.argv.includes('--strafe-popup');
   const bridge = {
     kind: 'electron',
     version: 1,
     platform: info.platform,
     appVersion: info.appVersion,
-    // The main process starts popups (the OAuth consent page) with this flag.
-    isPopup: process.argv.includes('--strafe-popup'),
+    isPopup,
 
     ready: () => send('strafe:ready'),
     show: () => send('strafe:show'),
@@ -116,6 +143,9 @@ if (info) {
       sources: () => call('strafe:screen:sources'),
       choose: (id) => call('strafe:screen:choose', String(id)),
     },
+
+    // Optional: a build that cannot detect games, and every popup, has no `games` at all.
+    ...(info.games === true && !isPopup ? { games } : {}),
   };
 
   contextBridge.exposeInMainWorld('strafeDesktop', deepFreeze(bridge));

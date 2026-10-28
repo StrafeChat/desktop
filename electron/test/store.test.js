@@ -63,3 +63,16 @@ test('prefs are saved in the shape the Tauri shell reads: the three camelCase fi
   assert.deepEqual(saved, { closeToTray: false, startMinimized: true, discordPresence: false });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'prefs.json'), 'utf8')), saved);
 });
+
+test('a prefs save leaves activity.json (game sharing, the shell\'s own file) untouched', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'activity.json');
+  const text = JSON.stringify({ version: 1, shareAccounts: ['a.local:1'], hidden: ['steam:1'], renames: { 'curated:x': 'X' }, user: [] });
+  fs.writeFileSync(file, text);
+  // What Settings -> Desktop saves: the page's whole prefs object, which knows nothing of games
+  // (and anything game-shaped in it is not kept either).
+  const saved = store.savePrefs(dir, { closeToTray: false, startMinimized: true, discordPresence: true, hidden: [], shareAccounts: [], user: [] });
+  assert.deepEqual(saved, { closeToTray: false, startMinimized: true, discordPresence: true });
+  assert.equal(fs.readFileSync(file, 'utf8'), text);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['activity.json', 'prefs.json']);
+});

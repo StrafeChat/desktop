@@ -1,0 +1,11 @@
+{
+  "installed": [
+    {
+      "appName": "1400000001",
+      "install_path": "{FIXTURES}/games/heroic/GogFixture",
+      "platform": "linux",
+      "is_dlc": false,
+      "version": "1.0"
+    }
+  ]
+}

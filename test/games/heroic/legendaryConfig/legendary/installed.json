@@ -1,0 +1,20 @@
+{
+  "FixtureEpicApp": {
+    "app_name": "FixtureEpicApp",
+    "title": "Heroic Fixture",
+    "install_path": "{FIXTURES}/games/heroic/HeroicFixture",
+    "executable": "Binaries/Win64/HeroicFixture.exe",
+    "platform": "Windows",
+    "is_dlc": false,
+    "version": "1.0.0"
+  },
+  "FixtureEpicDlc": {
+    "app_name": "FixtureEpicDlc",
+    "title": "Heroic Fixture: Extra Content",
+    "install_path": "{FIXTURES}/games/heroic/HeroicFixture",
+    "executable": "",
+    "platform": "Windows",
+    "is_dlc": true,
+    "version": "1.0.0"
+  }
+}

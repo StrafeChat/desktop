@@ -1,0 +1,19 @@
+{
+  "FormatVersion": 0,
+  "bIsIncompleteInstall": false,
+  "LaunchCommand": "",
+  "LaunchExecutable": "Binaries/Win64/EpicFixture-Win64-Shipping.exe",
+  "ManifestLocation": "{FIXTURES}/epic/data",
+  "bIsApplication": true,
+  "bIsExecutable": true,
+  "bIsManaged": false,
+  "DisplayName": "Epic Fixture",
+  "InstallationGuid": "00000000000000000000000000000001",
+  "InstallLocation": "{FIXTURES}/games/epic/EpicFixture",
+  "CatalogNamespace": "fixture",
+  "CatalogItemId": "00000000000000000000000000000002",
+  "AppName": "FixtureEpicApp",
+  "AppVersionString": "1.0.0",
+  "MainGameAppName": "FixtureEpicApp",
+  "AppCategories": ["public", "games", "applications"]
+}

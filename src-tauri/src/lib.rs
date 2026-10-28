@@ -4,8 +4,9 @@
 //! with its own title bar (the frontend draws it; this side only has to allow dragging and
 //! the three buttons), a tray icon so closing the window can mean "keep running", the
 //! start-up preferences, a small file where the frontend keeps the accounts it can switch
-//! between, and the "Playing Strafe" activity on Discord (see discord.rs). The frontend
-//! talks to all of it through the commands at the bottom.
+//! between, the "Playing Strafe" activity on Discord (see discord.rs), and recognising the game
+//! the person is playing so Strafe can show it (see games/, off until they turn it on). The
+//! frontend talks to all of it through the commands at the bottom.
 
 use std::{
     fs,
@@ -23,6 +24,7 @@ use tauri::{
 };
 
 mod discord;
+mod games;
 
 use discord::{Discord, Presence};
 
@@ -143,7 +145,12 @@ fn desktop_accounts_load(app: AppHandle) -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn desktop_accounts_save(app: AppHandle, value: serde_json::Value) -> Result<(), String> {
     let dir = config_dir(&app)?;
-    write_json(&dir.join(ACCOUNTS_FILE), &value)
+    write_json(&dir.join(ACCOUNTS_FILE), &value)?;
+    // Game sharing is per account: switching accounts switches it.
+    if let Some(games) = app.try_state::<games::Games>() {
+        games.accounts_saved(&value);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -399,12 +406,21 @@ pub fn run() {
             desktop_discord_presence_set,
             desktop_discord_presence_available,
             desktop_wipe_webview_storage,
+            games::games_get_state,
+            games::games_set_share,
+            games::games_set_hidden,
+            games::games_rename,
+            games::games_running_programs,
+            games::games_add,
+            games::games_remove,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             let prefs = load_prefs(&handle);
             // The window starts hidden, so the thread hears `visible` from show_main later.
             app.manage(Discord::start(prefs.discord_presence));
+            // Game activity: looks at nothing until sharing is on for the signed-in account.
+            app.manage(games::start(&handle));
             *app.state::<PrefsState>().0.lock().unwrap() = prefs;
             build_tray(&handle)?;
             enable_media(&handle);
@@ -441,7 +457,11 @@ pub fn run() {
             if let tauri::RunEvent::Reopen { .. } = event {
                 show_main(app);
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
+            // On the way out, stop looking for games (as the Electron shell does on will-quit).
+            if let tauri::RunEvent::Exit = event {
+                if let Some(games) = app.try_state::<games::Games>() {
+                    games.stop();
+                }
+            }
         });
 }
